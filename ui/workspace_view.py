@@ -15,6 +15,7 @@ class WorkspaceView(ctk.CTkFrame):
         self.active_item = None
         self.board_initialized = False
         self.global_grayscale = False
+        self.current_slot = 1
         
         self._setup_ui()
         
@@ -57,6 +58,21 @@ class WorkspaceView(ctk.CTkFrame):
         self.fullscreen_cb = ctk.CTkCheckBox(self.toolbar, text="Fullscreen", variable=self.fullscreen_var, command=self._on_fullscreen)
         self.fullscreen_cb.grid(row=0, column=8, padx=10, pady=10)
         
+        # Slots frame
+        self.slots_frame = ctk.CTkFrame(self.toolbar, fg_color="transparent")
+        self.slots_frame.grid(row=0, column=9, padx=10, pady=5)
+        
+        self.save_slot_btn = ctk.CTkButton(self.slots_frame, text="Save", width=40, command=self.save_current_slot, fg_color="#4CAF50", hover_color="#45a049")
+        self.save_slot_btn.pack(side="left", padx=(0, 5))
+        
+        self.slot_buttons = []
+        for i in range(1, 6):
+            btn = ctk.CTkButton(self.slots_frame, text=str(i), width=30,
+                                command=lambda slot=i: self.switch_slot(slot))
+            btn.pack(side="left", padx=2)
+            self.slot_buttons.append(btn)
+        self._update_slot_buttons()
+        
         # Canvas workspace
         self.canvas = ctk.CTkCanvas(self, bg="#2b2b2b", highlightthickness=0)
         self.canvas.grid(row=1, column=0, sticky="nsew")
@@ -96,6 +112,33 @@ class WorkspaceView(ctk.CTkFrame):
     def _on_fullscreen(self):
         self.toggle_fullscreen_cb(self.fullscreen_var.get())
 
+    def _update_slot_buttons(self):
+        for i, btn in enumerate(self.slot_buttons):
+            if (i + 1) == self.current_slot:
+                btn.configure(fg_color="#3B8ED0", border_width=2, border_color="white")
+            else:
+                btn.configure(fg_color="transparent", border_width=2, border_color="gray")
+
+    def save_current_slot(self):
+        if self.board_initialized:
+            try:
+                state = self.get_current_state()
+                self.ws_manager.save_state(state, self.current_slot)
+                
+                # Visual feedback
+                self.save_slot_btn.configure(text="Saved!", fg_color="#2E7D32")
+                self.after(1500, lambda: self.save_slot_btn.configure(text="Save", fg_color="#4CAF50"))
+            except Exception as e:
+                print(f"Error saving slot {self.current_slot}: {e}")
+
+    def switch_slot(self, slot_id):
+        if self.current_slot == slot_id:
+            return
+        self.current_slot = slot_id
+        self._update_slot_buttons()
+        self.load_images([]) # Automatically loads saved state for the new slot
+        self.fit_view()
+
     def load_images(self, image_paths):
         self.board_initialized = True
         self.canvas.delete(self.placeholder)
@@ -107,7 +150,7 @@ class WorkspaceView(ctk.CTkFrame):
         self.set_active_item(None)
         
         # Load persisted layout
-        saved_state = self.ws_manager.load_state()
+        saved_state = self.ws_manager.load_state(self.current_slot)
         
         # If user explicitly selected images, wipe the board and ONLY show them
         # But if they didn't select any (image_paths is empty), load the saved state.
@@ -142,7 +185,7 @@ class WorkspaceView(ctk.CTkFrame):
                 else:
                     max_dim = 800
                     if img.width > max_dim or img.height > max_dim:
-                        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                        scale = min(max_dim / img.width, max_dim / img.height)
                     # We only step offset if it wasn't a placed image
                     offset_x += 40
                     offset_y += 40

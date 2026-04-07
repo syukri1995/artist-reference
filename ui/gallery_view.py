@@ -6,6 +6,7 @@ from pathlib import Path
 from managers.image_manager import ImageManager
 from managers.collection_manager import CollectionManager
 from managers.tag_manager import TagManager
+from ui.settings_dialog import SettingsDialog
 
 class GalleryView(ctk.CTkFrame):
     def __init__(self, master, switch_to_workspace_callback):
@@ -138,17 +139,10 @@ class GalleryView(ctk.CTkFrame):
         self.load_gallery()
         
     def _open_settings(self):
-        settings_win = ctk.CTkToplevel(self)
-        settings_win.title("App Settings")
-        settings_win.geometry("300x150")
-        settings_win.attributes("-topmost", True)
-        
-        mode_label = ctk.CTkLabel(settings_win, text="Appearance Mode:")
-        mode_label.pack(pady=(20, 5))
-        
-        mode_menu = ctk.CTkOptionMenu(settings_win, values=["System", "Dark", "Light"],
-                                      command=ctk.set_appearance_mode)
-        mode_menu.pack(pady=5)
+        if not hasattr(self, "_settings_win") or not self._settings_win.winfo_exists():
+            self._settings_win = SettingsDialog(self)
+        else:
+            self._settings_win.focus()
         
     def _create_collection(self):
         dialog = ctk.CTkInputDialog(text="Enter collection name:", title="New Collection")

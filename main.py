@@ -21,8 +21,8 @@ class Application(ctk.CTk):
         super().__init__()
 
         self.title("Artist Reference Manager")
-        self.geometry("1100x700")
-        self.minsize(800, 600)
+        self.geometry("1200x800")
+        self.minsize(900, 750)
         
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -52,12 +52,6 @@ class Application(ctk.CTk):
         self.after(0, lambda: UpdateDialog(self, APP_VERSION, latest_version, release_notes, download_url))
         
     def on_closing(self):
-        if self.workspace_view and self.workspace_view.board_initialized:
-            try:
-                state = self.workspace_view.get_current_state()
-                self.workspace_view.ws_manager.save_state(state)
-            except Exception as e:
-                print(f"Error saving state on close: {e}")
         self.destroy()
 
     def toggle_topmost(self, state):
@@ -68,12 +62,6 @@ class Application(ctk.CTk):
 
     def show_gallery(self):
         if self.workspace_view:
-            if self.workspace_view.board_initialized:
-                try:
-                    state = self.workspace_view.get_current_state()
-                    self.workspace_view.ws_manager.save_state(state)
-                except Exception as e:
-                    print(f"Error saving state to DB: {e}")
             self.workspace_view.grid_forget()
             
         if self.gallery_view:

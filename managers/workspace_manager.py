@@ -4,7 +4,7 @@ class WorkspaceManager:
     def __init__(self):
         pass
 
-    def save_state(self, state_list):
+    def save_state(self, state_list, slot_id=1):
         """
         state_list should be a list of dicts:
         [{'file_path': str, 'x': float, 'y': float, 'scale': float, 'z_order': int}, ...]
@@ -12,23 +12,23 @@ class WorkspaceManager:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Clear existing state (a simple full replacement logic)
-        cursor.execute("DELETE FROM workspace_state")
+        # Clear existing state for the slot
+        cursor.execute("DELETE FROM workspace_state WHERE slot_id=?", (slot_id,))
         
         if state_list:
             data_to_insert = [
-                (item['file_path'], item['x'], item['y'], item['scale'], item['z_order'], item.get('flip_h', False), item.get('flip_v', False))
+                (slot_id, item['file_path'], item['x'], item['y'], item['scale'], item['z_order'], item.get('flip_h', False), item.get('flip_v', False))
                 for item in state_list
             ]
             cursor.executemany("""
-                INSERT INTO workspace_state (file_path, x, y, scale, z_order, flip_h, flip_v)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO workspace_state (slot_id, file_path, x, y, scale, z_order, flip_h, flip_v)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, data_to_insert)
             
         conn.commit()
         conn.close()
 
-    def load_state(self):
+    def load_state(self, slot_id=1):
         """
         Returns a dict of saved state:
         {file_path: {'x': float, 'y': float, 'scale': float, 'z_order': int, 'flip_h': bool, 'flip_v': bool}, ...}
@@ -37,10 +37,10 @@ class WorkspaceManager:
         cursor = conn.cursor()
         
         try:
-            cursor.execute("SELECT file_path, x, y, scale, z_order, flip_h, flip_v FROM workspace_state ORDER BY z_order ASC")
+            cursor.execute("SELECT file_path, x, y, scale, z_order, flip_h, flip_v FROM workspace_state WHERE slot_id=? ORDER BY z_order ASC", (slot_id,))
             rows = cursor.fetchall()
         except Exception:
-            cursor.execute("SELECT file_path, x, y, scale, z_order FROM workspace_state ORDER BY z_order ASC")
+            cursor.execute("SELECT file_path, x, y, scale, z_order FROM workspace_state WHERE slot_id=? ORDER BY z_order ASC", (slot_id,))
             rows_old = cursor.fetchall()
             rows = []
             for r in rows_old:

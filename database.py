@@ -72,17 +72,51 @@ def init_db():
         )
     """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS workspace_state (
-            file_path TEXT PRIMARY KEY,
-            x REAL NOT NULL,
-            y REAL NOT NULL,
-            scale REAL NOT NULL,
-            z_order INTEGER NOT NULL,
-            flip_h BOOLEAN DEFAULT 0,
-            flip_v BOOLEAN DEFAULT 0
-        )
-    """)
+    cursor.execute("PRAGMA table_info(workspace_state)")
+    columns = [col[1] for col in cursor.fetchall()]
+    
+    if columns and "slot_id" not in columns:
+        cursor.execute("ALTER TABLE workspace_state RENAME TO workspace_state_old")
+        
+        cursor.execute("""
+            CREATE TABLE workspace_state (
+                slot_id INTEGER NOT NULL DEFAULT 1,
+                file_path TEXT NOT NULL,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                scale REAL NOT NULL,
+                z_order INTEGER NOT NULL,
+                flip_h BOOLEAN DEFAULT 0,
+                flip_v BOOLEAN DEFAULT 0,
+                PRIMARY KEY (slot_id, file_path)
+            )
+        """)
+        
+        if "flip_h" in columns and "flip_v" in columns:
+            cursor.execute("""
+                INSERT INTO workspace_state (slot_id, file_path, x, y, scale, z_order, flip_h, flip_v)
+                SELECT 1, file_path, x, y, scale, z_order, flip_h, flip_v FROM workspace_state_old
+            """)
+        else:
+            cursor.execute("""
+                INSERT INTO workspace_state (slot_id, file_path, x, y, scale, z_order)
+                SELECT 1, file_path, x, y, scale, z_order FROM workspace_state_old
+            """)
+        cursor.execute("DROP TABLE workspace_state_old")
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_state (
+                slot_id INTEGER NOT NULL DEFAULT 1,
+                file_path TEXT NOT NULL,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                scale REAL NOT NULL,
+                z_order INTEGER NOT NULL,
+                flip_h BOOLEAN DEFAULT 0,
+                flip_v BOOLEAN DEFAULT 0,
+                PRIMARY KEY (slot_id, file_path)
+            )
+        """)
 
     # Graceful migration for existing tables
     try:
