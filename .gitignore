@@ -1,0 +1,31 @@
+# Environments
+.venv
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build
+build/
+dist/
+*.spec
+*.exe
+*.zip
+*.tar
+*.rar
+*.7z
+
+# Data / Local Files
+data/
+*.db
+*.db-journal
+*.log
+
+# Images
+*.webp
+.images/
+.thumbnails/
+
+# Git artifacts
+gitignore.git
