@@ -24,31 +24,37 @@ class TagManager:
         return tags
 
     def tag_image(self, image_id: int, tag_id: int) -> bool:
+        return self.tag_images([image_id], tag_id)
+
+    def tag_images(self, image_ids: list[int], tag_id: int) -> bool:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.executemany('''
                 INSERT OR IGNORE INTO image_tags (image_id, tag_id)
                 VALUES (?, ?)
-            ''', (image_id, tag_id))
+            ''', [(img_id, tag_id) for img_id in image_ids])
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to tag image: {e}")
+            print(f"Failed to tag images: {e}")
             return False
 
     def remove_tag_from_image(self, image_id: int, tag_id: int) -> bool:
+        return self.remove_tag_from_images([image_id], tag_id)
+
+    def remove_tag_from_images(self, image_ids: list[int], tag_id: int) -> bool:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.executemany('''
                 DELETE FROM image_tags
                 WHERE image_id = ? AND tag_id = ?
-            ''', (image_id, tag_id))
+            ''', [(img_id, tag_id) for img_id in image_ids])
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to untag image: {e}")
+            print(f"Failed to untag images: {e}")
             return False
 
     def get_tag_by_name(self, name: str):

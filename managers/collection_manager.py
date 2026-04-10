@@ -24,31 +24,37 @@ class CollectionManager:
         return collections
         
     def add_image_to_collection(self, image_id: int, collection_id: int) -> bool:
+        return self.add_images_to_collection([image_id], collection_id)
+
+    def add_images_to_collection(self, image_ids: list[int], collection_id: int) -> bool:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.executemany('''
                 INSERT OR IGNORE INTO collection_images (image_id, collection_id)
                 VALUES (?, ?)
-            ''', (image_id, collection_id))
+            ''', [(img_id, collection_id) for img_id in image_ids])
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to add image to collection: {e}")
+            print(f"Failed to add images to collection: {e}")
             return False
 
     def remove_image_from_collection(self, image_id: int, collection_id: int) -> bool:
+        return self.remove_images_from_collection([image_id], collection_id)
+
+    def remove_images_from_collection(self, image_ids: list[int], collection_id: int) -> bool:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.executemany('''
                 DELETE FROM collection_images 
                 WHERE image_id = ? AND collection_id = ?
-            ''', (image_id, collection_id))
+            ''', [(img_id, collection_id) for img_id in image_ids])
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to remove image from collection: {e}")
+            print(f"Failed to remove images from collection: {e}")
             return False
             
     def delete_collection(self, collection_id: int) -> bool:
