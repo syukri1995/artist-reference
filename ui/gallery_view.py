@@ -399,27 +399,27 @@ class GalleryView(ctk.CTkFrame):
     # ------------------------------------------------------------------ mutations
 
     def _add_to_collection(self, paths, cid):
-        for p in paths:
-            if p in self.path_to_id:
-                self.collection_mgr.add_image_to_collection(self.path_to_id[p], cid)
+        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if image_ids:
+            self.collection_mgr.add_images_to_collection(image_ids, cid)
                 
     def _remove_from_collection(self, paths):
-        for p in paths:
-            if p in self.path_to_id:
-                self.collection_mgr.remove_image_from_collection(
-                    self.path_to_id[p], self.current_collection_id
-                )
+        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if image_ids:
+            self.collection_mgr.remove_images_from_collection(
+                image_ids, self.current_collection_id
+            )
         self.load_gallery()
         
     def _tag_images(self, paths, tid):
-        for p in paths:
-            if p in self.path_to_id:
-                self.tag_mgr.tag_image(self.path_to_id[p], tid)
+        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if image_ids:
+            self.tag_mgr.tag_images(image_ids, tid)
                 
     def _untag_images(self, paths, tid):
-        for p in paths:
-            if p in self.path_to_id:
-                self.tag_mgr.remove_tag_from_image(self.path_to_id[p], tid)
+        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if image_ids:
+            self.tag_mgr.remove_tag_from_images(image_ids, tid)
         if self.current_tag_id == tid:
             self.load_gallery()
             
