@@ -88,10 +88,22 @@ class WorkspaceView(ctk.CTkFrame):
         self.canvas.grid(row=1, column=0, sticky="nsew")
         
         # Instructions placeholder
+        instructions_text = (
+            "Artist Workspace Canvas\n\n"
+            "Select images from the gallery to begin.\n\n"
+            "Controls:\n"
+            "• Middle/Right Click + Drag: Pan canvas\n"
+            "• Scroll: Zoom canvas\n"
+            "• Ctrl + Scroll: Zoom selected image\n"
+            "• Alt + Drag: Quick scale selected image\n"
+            "• Delete / Backspace: Remove selected image"
+        )
         self.placeholder = self.canvas.create_text(
-            400, 300, 
-            text="Artist Workspace Canvas\n(Images will appear here)", 
-            fill="#64748B", font=("Segoe UI", 16)
+            0, 0,
+            text=instructions_text,
+            fill="#64748B", font=("Segoe UI", 14),
+            justify="center",
+            tags="placeholder"
         )
 
     def _setup_bindings(self):
@@ -116,6 +128,12 @@ class WorkspaceView(ctk.CTkFrame):
         # Delete bindings
         self.winfo_toplevel().bind("<Delete>", self.on_delete_key)
         self.winfo_toplevel().bind("<BackSpace>", self.on_delete_key)
+
+    def _center_placeholder(self, event=None):
+        if self.canvas.find_withtag("placeholder"):
+            w = self.canvas.winfo_width()
+            h = self.canvas.winfo_height()
+            self.canvas.coords(self.placeholder, w/2, h/2)
 
     def _on_topmost(self):
         self.toggle_topmost_cb(self.topmost_var.get())
@@ -150,9 +168,15 @@ class WorkspaceView(ctk.CTkFrame):
         self.load_images([]) # Automatically loads saved state for the new slot
         self.fit_view()
 
+    def _toggle_placeholder(self):
+        if not self.image_data:
+            self.canvas.itemconfigure(self.placeholder, state="normal")
+            self.canvas.tag_raise("placeholder")
+        else:
+            self.canvas.itemconfigure(self.placeholder, state="hidden")
+
     def load_images(self, image_paths):
         self.board_initialized = True
-        self.canvas.delete(self.placeholder)
         
         # Clear exiting board instances to prevent duplicates
         for item_id in self.image_data:
@@ -218,6 +242,8 @@ class WorkspaceView(ctk.CTkFrame):
         # Bind dragging logic for any image with tag 'draggable'
         self.canvas.tag_bind("draggable", "<ButtonPress-1>", self.on_drag_start)
         self.canvas.tag_bind("draggable", "<B1-Motion>", self.on_drag_motion)
+
+        self._toggle_placeholder()
 
     def get_current_state(self):
         # Scan canvas IDs bottom to top
@@ -479,6 +505,7 @@ class WorkspaceView(ctk.CTkFrame):
             self.canvas.delete(self.active_item)
             del self.image_data[self.active_item]
             self.set_active_item(None)
+            self._toggle_placeholder()
 
     def on_resize_start(self, event):
         if not self.active_item: return
