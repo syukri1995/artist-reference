@@ -51,9 +51,8 @@ class WorkspaceManager:
 
         conn.close()
         
-        state_dict = {}
-        for row in rows:
-            state_dict[row['file_path']] = {
+        state_dict = {
+            row['file_path']: {
                 'x': row['x'],
                 'y': row['y'],
                 'scale': row['scale'],
@@ -61,5 +60,7 @@ class WorkspaceManager:
                 'flip_h': bool(row['flip_h']),
                 'flip_v': bool(row['flip_v'])
             }
+            for row in rows
+        }
             
         return state_dict
