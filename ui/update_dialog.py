@@ -51,5 +51,7 @@ class UpdateDialog(ctk.CTkToplevel):
         self.grab_set()
         
     def download_update(self):
-        webbrowser.open(self.download_url)
+        # Security check: validate URL scheme
+        if self.download_url.startswith(("http://", "https://")):
+            webbrowser.open(self.download_url)
         self.destroy()

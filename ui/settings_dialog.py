@@ -122,6 +122,9 @@ class SettingsDialog(ctk.CTkToplevel):
         
         # 4. Contact Support
         def open_support():
-            webbrowser.open("https://github.com/syukri1995/artist-reference/issues")
+            support_url = "https://github.com/syukri1995/artist-reference/issues"
+            # Security check: validate URL scheme
+            if support_url.startswith(("http://", "https://")):
+                webbrowser.open(support_url)
             
         add_info_row("Contact Support:", "Report an Issue / Request Feature", is_link=True, command=open_support)
