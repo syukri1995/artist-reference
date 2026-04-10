@@ -19,7 +19,7 @@ class TagManager:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, name FROM tags ORDER BY name")
-        tags = cursor.fetchall()
+        tags = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return tags
 
@@ -55,9 +55,9 @@ class TagManager:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, name FROM tags WHERE name = ?", (name,))
-        tag = cursor.fetchone()
+        row = cursor.fetchone()
         conn.close()
-        return tag
+        return dict(row) if row else None
 
     def delete_tag(self, tag_id: int) -> bool:
         try:

@@ -19,7 +19,7 @@ class CollectionManager:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, name, description FROM collections ORDER BY name")
-        collections = cursor.fetchall()
+        collections = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return collections
         

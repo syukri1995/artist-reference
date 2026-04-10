@@ -32,6 +32,7 @@ class ImageManager:
         
         # Generate WebP thumbnail
         thumb_path = self.thumbs_dir / f"{dest_path.stem}.webp"
+        
         width, height = self._generate_thumbnail(str(dest_path), str(thumb_path))
         
         # Save to DB
@@ -44,7 +45,7 @@ class ImageManager:
             
         return True
 
-    def _generate_thumbnail(self, source_path: str, thumb_path: str, max_size=(400, 400)) -> tuple[int, int]:
+    def _generate_thumbnail(self, source_path: str, thumb_path: str, max_size=(200, 200)) -> tuple[int, int]:
         try:
             with Image.open(source_path) as img:
                 width, height = img.size
@@ -76,6 +77,7 @@ class ImageManager:
             return False
             
     def query_images(self, collection_id=None, tag_id=None, search_term=None, only_favorites=False):
+        """Query images detached from DB references to avoid cross-thread issues."""
         conn = get_connection()
         cursor = conn.cursor()
         
@@ -114,7 +116,7 @@ class ImageManager:
         final_query += " ORDER BY i.date_added DESC"
         
         cursor.execute(final_query, tuple(params))
-        images = cursor.fetchall()
+        images = [dict(row) for row in cursor.fetchall()] # Convert sqlite3.Row to dict to detach from DB
         conn.close()
         return images
         

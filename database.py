@@ -24,6 +24,8 @@ def get_connection() -> sqlite3.Connection:
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
+    
+    cursor.execute("PRAGMA journal_mode=WAL")
 
     # Create tables based on standard specifications
     cursor.execute("""
@@ -133,6 +135,12 @@ def init_db():
         cursor.execute("ALTER TABLE workspace_state ADD COLUMN flip_v BOOLEAN DEFAULT 0")
     except Exception:
         pass
+
+    # Performance Indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_file_path ON images(file_path)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_image_tags_tag_id ON image_tags(tag_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_collections_images_col_id ON collection_images(collection_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_is_favorite ON images(is_favorite)")
 
     conn.commit()
     conn.close()

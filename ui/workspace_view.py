@@ -24,64 +24,66 @@ class WorkspaceView(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         
         # Top toolbar
-        self.toolbar = ctk.CTkFrame(self, height=50, corner_radius=0)
+        self.toolbar = ctk.CTkFrame(self, height=56, corner_radius=0)
         self.toolbar.grid(row=0, column=0, sticky="ew")
         
-        self.back_button = ctk.CTkButton(self.toolbar, text="Back to Gallery", 
-                                         command=self.switch_to_gallery_callback, width=120)
-        self.back_button.grid(row=0, column=0, padx=10, pady=10)
+        button_font = ctk.CTkFont(family="Segoe UI", size=13)
         
-        self.zoom_in = ctk.CTkButton(self.toolbar, text="Zoom In", width=80, command=self.zoom_in_btn)
-        self.zoom_in.grid(row=0, column=1, padx=5, pady=10)
+        self.back_button = ctk.CTkButton(self.toolbar, text="Back to Gallery", font=button_font, 
+                                         command=self.switch_to_gallery_callback, width=120, height=36)
+        self.back_button.grid(row=0, column=0, padx=(16, 8), pady=12)
         
-        self.zoom_out = ctk.CTkButton(self.toolbar, text="Zoom Out", width=80, command=self.zoom_out_btn)
-        self.zoom_out.grid(row=0, column=2, padx=5, pady=10)
+        self.zoom_in = ctk.CTkButton(self.toolbar, text="Zoom In", font=button_font, width=80, height=32, command=self.zoom_in_btn)
+        self.zoom_in.grid(row=0, column=1, padx=4, pady=12)
         
-        self.fit_btn = ctk.CTkButton(self.toolbar, text="Fit View", width=80, command=self.fit_view)
-        self.fit_btn.grid(row=0, column=3, padx=5, pady=10)
+        self.zoom_out = ctk.CTkButton(self.toolbar, text="Zoom Out", font=button_font, width=80, height=32, command=self.zoom_out_btn)
+        self.zoom_out.grid(row=0, column=2, padx=4, pady=12)
         
-        self.grayscale_btn = ctk.CTkButton(self.toolbar, text="Grayscale", width=80, command=self.toggle_grayscale)
-        self.grayscale_btn.grid(row=0, column=4, padx=5, pady=10)
+        self.fit_btn = ctk.CTkButton(self.toolbar, text="Fit View", font=button_font, width=80, height=32, command=self.fit_view)
+        self.fit_btn.grid(row=0, column=3, padx=4, pady=12)
+        
+        self.grayscale_btn = ctk.CTkButton(self.toolbar, text="Grayscale", font=button_font, width=80, height=32, command=self.toggle_grayscale)
+        self.grayscale_btn.grid(row=0, column=4, padx=4, pady=12)
 
-        self.flip_h_btn = ctk.CTkButton(self.toolbar, text="Flip H", width=60, command=self.flip_horizontal)
-        self.flip_h_btn.grid(row=0, column=5, padx=5, pady=10)
+        self.flip_h_btn = ctk.CTkButton(self.toolbar, text="Flip H", font=button_font, width=64, height=32, command=self.flip_horizontal)
+        self.flip_h_btn.grid(row=0, column=5, padx=4, pady=12)
 
-        self.flip_v_btn = ctk.CTkButton(self.toolbar, text="Flip V", width=60, command=self.flip_vertical)
-        self.flip_v_btn.grid(row=0, column=6, padx=5, pady=10)
+        self.flip_v_btn = ctk.CTkButton(self.toolbar, text="Flip V", font=button_font, width=64, height=32, command=self.flip_vertical)
+        self.flip_v_btn.grid(row=0, column=6, padx=(4, 16), pady=12)
         
         # Window controls
         self.topmost_var = ctk.BooleanVar(value=False)
-        self.topmost_cb = ctk.CTkCheckBox(self.toolbar, text="Always On Top", variable=self.topmost_var, command=self._on_topmost)
-        self.topmost_cb.grid(row=0, column=7, padx=10, pady=10)
+        self.topmost_cb = ctk.CTkCheckBox(self.toolbar, text="Always On Top", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.topmost_var, command=self._on_topmost)
+        self.topmost_cb.grid(row=0, column=7, padx=(8, 16), pady=12)
         
         self.fullscreen_var = ctk.BooleanVar(value=False)
-        self.fullscreen_cb = ctk.CTkCheckBox(self.toolbar, text="Fullscreen", variable=self.fullscreen_var, command=self._on_fullscreen)
-        self.fullscreen_cb.grid(row=0, column=8, padx=10, pady=10)
+        self.fullscreen_cb = ctk.CTkCheckBox(self.toolbar, text="Fullscreen", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.fullscreen_var, command=self._on_fullscreen)
+        self.fullscreen_cb.grid(row=0, column=8, padx=16, pady=12)
         
         # Slots frame
         self.slots_frame = ctk.CTkFrame(self.toolbar, fg_color="transparent")
-        self.slots_frame.grid(row=0, column=9, padx=10, pady=5)
+        self.slots_frame.grid(row=0, column=9, padx=(16, 24), pady=4, sticky="e")
         
-        self.save_slot_btn = ctk.CTkButton(self.slots_frame, text="Save", width=40, command=self.save_current_slot, fg_color="#4CAF50", hover_color="#45a049")
-        self.save_slot_btn.pack(side="left", padx=(0, 5))
+        self.save_slot_btn = ctk.CTkButton(self.slots_frame, text="Save", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), width=48, height=28, command=self.save_current_slot, fg_color="#10B981", hover_color="#047857")
+        self.save_slot_btn.pack(side="left", padx=(0, 8))
         
         self.slot_buttons = []
         for i in range(1, 6):
-            btn = ctk.CTkButton(self.slots_frame, text=str(i), width=30,
+            btn = ctk.CTkButton(self.slots_frame, text=str(i), font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), width=32, height=32, corner_radius=16,
                                 command=lambda slot=i: self.switch_slot(slot))
-            btn.pack(side="left", padx=2)
+            btn.pack(side="left", padx=4)
             self.slot_buttons.append(btn)
         self._update_slot_buttons()
         
-        # Canvas workspace
-        self.canvas = ctk.CTkCanvas(self, bg="#2b2b2b", highlightthickness=0)
+        # Canvas workspace (Deep Slate background #0F172A)
+        self.canvas = ctk.CTkCanvas(self, bg="#0F172A", highlightthickness=0)
         self.canvas.grid(row=1, column=0, sticky="nsew")
         
         # Instructions placeholder
         self.placeholder = self.canvas.create_text(
             400, 300, 
             text="Artist Workspace Canvas\n(Images will appear here)", 
-            fill="gray", font=("Arial", 20)
+            fill="#64748B", font=("Segoe UI", 16)
         )
         
         # Bind canvas panning (Middle click or Right click)
@@ -115,9 +117,9 @@ class WorkspaceView(ctk.CTkFrame):
     def _update_slot_buttons(self):
         for i, btn in enumerate(self.slot_buttons):
             if (i + 1) == self.current_slot:
-                btn.configure(fg_color="#3B8ED0", border_width=2, border_color="white")
+                btn.configure(fg_color="#7C3AED", text_color="white", border_width=2, border_color="#C4B5FD")
             else:
-                btn.configure(fg_color="transparent", border_width=2, border_color="gray")
+                btn.configure(fg_color="transparent", text_color="#94A3B8", border_width=1, border_color="#334155")
 
     def save_current_slot(self):
         if self.board_initialized:
@@ -126,8 +128,8 @@ class WorkspaceView(ctk.CTkFrame):
                 self.ws_manager.save_state(state, self.current_slot)
                 
                 # Visual feedback
-                self.save_slot_btn.configure(text="Saved!", fg_color="#2E7D32")
-                self.after(1500, lambda: self.save_slot_btn.configure(text="Save", fg_color="#4CAF50"))
+                self.save_slot_btn.configure(text="✔", fg_color="#059669")
+                self.after(1500, lambda: self.save_slot_btn.configure(text="Save", fg_color="#10B981"))
             except Exception as e:
                 print(f"Error saving slot {self.current_slot}: {e}")
 
@@ -433,8 +435,8 @@ class WorkspaceView(ctk.CTkFrame):
         
         if item_id:
             # Create fresh to avoid any hidden state or caching bugs
-            self.sel_box = self.canvas.create_rectangle(0, 0, 0, 0, outline="#00FF00", width=5, tags="selection")
-            self.sel_handle = self.canvas.create_rectangle(0, 0, 0, 0, fill="#00FF00", outline="white", width=2, tags="handle")
+            self.sel_box = self.canvas.create_rectangle(0, 0, 0, 0, outline="#7C3AED", width=3, tags="selection")
+            self.sel_handle = self.canvas.create_rectangle(0, 0, 0, 0, fill="#7C3AED", outline="#FFFFFF", width=2, tags="handle")
             
             # Rebind handles
             self.canvas.tag_bind("handle", "<ButtonPress-1>", self.on_resize_start)
