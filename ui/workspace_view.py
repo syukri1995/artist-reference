@@ -27,6 +27,13 @@ class WorkspaceView(ctk.CTkFrame):
         self.toolbar = ctk.CTkFrame(self, height=56, corner_radius=0)
         self.toolbar.grid(row=0, column=0, sticky="ew")
         
+        self._setup_toolbar()
+        self._setup_window_controls()
+        self._setup_slots()
+        self._setup_canvas()
+        self._setup_bindings()
+
+    def _setup_toolbar(self):
         button_font = ctk.CTkFont(family="Segoe UI", size=13)
         
         self.back_button = ctk.CTkButton(self.toolbar, text="Back to Gallery", font=button_font, 
@@ -50,8 +57,8 @@ class WorkspaceView(ctk.CTkFrame):
 
         self.flip_v_btn = ctk.CTkButton(self.toolbar, text="Flip V", font=button_font, width=64, height=32, command=self.flip_vertical)
         self.flip_v_btn.grid(row=0, column=6, padx=(4, 16), pady=12)
-        
-        # Window controls
+
+    def _setup_window_controls(self):
         self.topmost_var = ctk.BooleanVar(value=False)
         self.topmost_cb = ctk.CTkCheckBox(self.toolbar, text="Always On Top", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.topmost_var, command=self._on_topmost)
         self.topmost_cb.grid(row=0, column=7, padx=(8, 16), pady=12)
@@ -59,8 +66,8 @@ class WorkspaceView(ctk.CTkFrame):
         self.fullscreen_var = ctk.BooleanVar(value=False)
         self.fullscreen_cb = ctk.CTkCheckBox(self.toolbar, text="Fullscreen", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.fullscreen_var, command=self._on_fullscreen)
         self.fullscreen_cb.grid(row=0, column=8, padx=16, pady=12)
-        
-        # Slots frame
+
+    def _setup_slots(self):
         self.slots_frame = ctk.CTkFrame(self.toolbar, fg_color="transparent")
         self.slots_frame.grid(row=0, column=9, padx=(16, 24), pady=4, sticky="e")
         
@@ -74,7 +81,8 @@ class WorkspaceView(ctk.CTkFrame):
             btn.pack(side="left", padx=4)
             self.slot_buttons.append(btn)
         self._update_slot_buttons()
-        
+
+    def _setup_canvas(self):
         # Canvas workspace (Deep Slate background #0F172A)
         self.canvas = ctk.CTkCanvas(self, bg="#0F172A", highlightthickness=0)
         self.canvas.grid(row=1, column=0, sticky="nsew")
@@ -85,7 +93,8 @@ class WorkspaceView(ctk.CTkFrame):
             text="Artist Workspace Canvas\n(Images will appear here)", 
             fill="#64748B", font=("Segoe UI", 16)
         )
-        
+
+    def _setup_bindings(self):
         # Bind canvas panning (Middle click or Right click)
         self.canvas.bind("<ButtonPress-2>", self.on_pan_start)
         self.canvas.bind("<B2-Motion>", self.on_pan_drag)
