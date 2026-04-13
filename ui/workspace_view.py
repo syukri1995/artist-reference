@@ -56,20 +56,25 @@ class WorkspaceView(ctk.CTkFrame):
         self.flip_h_btn.grid(row=0, column=5, padx=4, pady=12)
 
         self.flip_v_btn = ctk.CTkButton(self.toolbar, text="Flip V", font=button_font, width=64, height=32, command=self.flip_vertical)
-        self.flip_v_btn.grid(row=0, column=6, padx=(4, 16), pady=12)
+        self.flip_v_btn.grid(row=0, column=6, padx=4, pady=12)
+
+        self.clear_btn = ctk.CTkButton(self.toolbar, text="🗑 Clear All", font=button_font, width=90, height=32,
+                                       command=self.clear_workspace,
+                                       fg_color="#DC2626", hover_color="#991B1B", text_color="white")
+        self.clear_btn.grid(row=0, column=7, padx=(4, 16), pady=12)
 
     def _setup_window_controls(self):
         self.topmost_var = ctk.BooleanVar(value=False)
         self.topmost_cb = ctk.CTkCheckBox(self.toolbar, text="Always On Top", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.topmost_var, command=self._on_topmost)
-        self.topmost_cb.grid(row=0, column=7, padx=(8, 16), pady=12)
+        self.topmost_cb.grid(row=0, column=8, padx=(8, 16), pady=12)
         
         self.fullscreen_var = ctk.BooleanVar(value=False)
         self.fullscreen_cb = ctk.CTkCheckBox(self.toolbar, text="Fullscreen", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.fullscreen_var, command=self._on_fullscreen)
-        self.fullscreen_cb.grid(row=0, column=8, padx=16, pady=12)
+        self.fullscreen_cb.grid(row=0, column=9, padx=16, pady=12)
 
     def _setup_slots(self):
         self.slots_frame = ctk.CTkFrame(self.toolbar, fg_color="transparent")
-        self.slots_frame.grid(row=0, column=9, padx=(16, 24), pady=4, sticky="e")
+        self.slots_frame.grid(row=0, column=10, padx=(16, 24), pady=4, sticky="e")
         
         self.save_slot_btn = ctk.CTkButton(self.slots_frame, text="Save", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), width=48, height=28, command=self.save_current_slot, fg_color="#10B981", hover_color="#047857")
         self.save_slot_btn.pack(side="left", padx=(0, 8))
@@ -165,8 +170,30 @@ class WorkspaceView(ctk.CTkFrame):
             return
         self.current_slot = slot_id
         self._update_slot_buttons()
+        self._reset_canvas_view()
         self.load_images([]) # Automatically loads saved state for the new slot
         self.fit_view()
+
+    def _reset_canvas_view(self):
+        """Reset canvas pan position to origin so each slot starts from a clean view."""
+        self.canvas.xview_moveto(0)
+        self.canvas.yview_moveto(0)
+        # Reset the internal scan origin used by scan_mark/scan_dragto
+        self.canvas.scan_mark(0, 0)
+        self.canvas.scan_dragto(0, 0, gain=1)
+
+    def clear_workspace(self):
+        """Remove all images from the canvas and clear the saved slot state."""
+        if not self.image_data:
+            return
+        # Delete all canvas image items
+        for item_id in list(self.image_data.keys()):
+            self.canvas.delete(item_id)
+        self.image_data.clear()
+        self.set_active_item(None)
+        # Persist the empty state so this slot stays clear after reloading
+        self.ws_manager.save_state([], self.current_slot)
+        self._toggle_placeholder()
 
     def _toggle_placeholder(self):
         if not self.image_data:
