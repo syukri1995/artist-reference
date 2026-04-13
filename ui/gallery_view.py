@@ -118,6 +118,7 @@ class GalleryView(ctk.CTkFrame):
         for col_frame in self.masonry_columns:
             col_frame.destroy()
         self.masonry_columns.clear()
+        self.masonry_heights = []
 
         # Set weight
         for i in range(6):
@@ -128,6 +129,7 @@ class GalleryView(ctk.CTkFrame):
             col_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
             col_frame.grid(row=0, column=i, sticky="nw", padx=5)
             self.masonry_columns.append(col_frame)
+            self.masonry_heights.append(0)
 
     def _on_columns_changed(self, value):
         new_cols = int(value)
@@ -337,16 +339,14 @@ class GalleryView(ctk.CTkFrame):
 
     # ------------------------------------------------------------------ rendering
 
-    def _get_shortest_column(self):
-        shortest_col = self.masonry_columns[0]
-        min_height = shortest_col.winfo_reqheight()
-
-        for col in self.masonry_columns[1:]:
-            h = col.winfo_reqheight()
+    def _get_shortest_column_index(self):
+        min_height = self.masonry_heights[0]
+        min_idx = 0
+        for i, h in enumerate(self.masonry_heights):
             if h < min_height:
                 min_height = h
-                shortest_col = col
-        return shortest_col
+                min_idx = i
+        return min_idx
 
     def _render_thumbnail(self, img_data, img, load_id):
         if load_id != self._current_load_id:
@@ -370,7 +370,9 @@ class GalleryView(ctk.CTkFrame):
         ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(target_width, target_height))
         del img  # Release the PIL pixel buffer — CTkImage already has its own copy
 
-        col_frame = self._get_shortest_column()
+        col_idx = self._get_shortest_column_index()
+        col_frame = self.masonry_columns[col_idx]
+        self.masonry_heights[col_idx] += target_height + 20 # Add card padding padding
 
         card = ctk.CTkFrame(col_frame, fg_color="#1E293B", corner_radius=10)
         card.pack(fill="x", pady=10)

@@ -52,10 +52,10 @@ class WorkspaceView(ctk.CTkFrame):
         self.grayscale_btn = ctk.CTkButton(self.toolbar, text="Grayscale", font=button_font, width=80, height=32, command=self.toggle_grayscale)
         self.grayscale_btn.grid(row=0, column=4, padx=4, pady=12)
 
-        self.flip_h_btn = ctk.CTkButton(self.toolbar, text="Flip H", font=button_font, width=64, height=32, command=self.flip_horizontal)
+        self.flip_h_btn = ctk.CTkButton(self.toolbar, text="Flip Horizontal", font=button_font, width=64, height=32, command=self.flip_horizontal)
         self.flip_h_btn.grid(row=0, column=5, padx=4, pady=12)
 
-        self.flip_v_btn = ctk.CTkButton(self.toolbar, text="Flip V", font=button_font, width=64, height=32, command=self.flip_vertical)
+        self.flip_v_btn = ctk.CTkButton(self.toolbar, text="Flip Vertical", font=button_font, width=64, height=32, command=self.flip_vertical)
         self.flip_v_btn.grid(row=0, column=6, padx=4, pady=12)
 
         self.clear_btn = ctk.CTkButton(self.toolbar, text="🗑 Clear All", font=button_font, width=90, height=32,
