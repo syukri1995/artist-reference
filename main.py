@@ -2,6 +2,7 @@ import customtkinter as ctk
 import sys
 import os
 from pathlib import Path
+from tkinterdnd2 import TkinterDnD
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -20,9 +21,10 @@ from ui.update_dialog import UpdateDialog
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme(resource_path("ui/theme.json"))
 
-class Application(ctk.CTk):
+class Application(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self):
         super().__init__()
+        self.TkdndVersion = TkinterDnD._require(self)
 
         self.title("Artist Reference Manager")
         self.geometry("1440x900")
@@ -39,8 +41,9 @@ class Application(ctk.CTk):
         # Initialize views
         self.workspace_view = None
         self.gallery_view = None
+        self.upload_view = None
         
-        self.gallery_view = GalleryView(self, self.show_workspace)
+        self.gallery_view = GalleryView(self, self.show_workspace, self.show_upload)
 
         # Start with Gallery
         self.show_gallery()
@@ -66,9 +69,25 @@ class Application(ctk.CTk):
     def show_gallery(self):
         if self.workspace_view:
             self.workspace_view.grid_forget()
+        if self.upload_view:
+            self.upload_view.grid_forget()
             
         if self.gallery_view:
+            self.gallery_view.load_gallery()
             self.gallery_view.grid(row=0, column=0, sticky="nsew")
+
+    def show_upload(self):
+        if self.workspace_view:
+            self.workspace_view.grid_forget()
+        if self.gallery_view:
+            self.gallery_view.grid_forget()
+
+        if not self.upload_view:
+            from ui.upload_view import UploadView
+            self.upload_view = UploadView(self, self.show_gallery, self.show_gallery)
+
+        self.upload_view.reset()
+        self.upload_view.grid(row=0, column=0, sticky="nsew")
 
     def show_workspace(self, selected_images=None):
         if self.gallery_view:

@@ -35,8 +35,16 @@ class ImageManager:
         
         width, height = self._generate_thumbnail(str(dest_path), str(thumb_path))
         
+        # Compute Hash
+        import hashlib
+        hash_md5 = hashlib.md5()
+        with open(dest_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        file_hash = hash_md5.hexdigest()
+
         # Save to DB
-        success = self._save_to_db(str(dest_path), str(thumb_path), width, height)
+        success = self._save_to_db(str(dest_path), str(thumb_path), width, height, file_hash)
         if not success:
             # Cleanup on failure
             if dest_path.exists(): os.remove(dest_path)
@@ -62,19 +70,34 @@ class ImageManager:
             print(f"Error generating thumbnail for {source_path}: {e}")
             return 0, 0
 
-    def _save_to_db(self, file_path: str, thumb_path: str, width: int, height: int) -> bool:
+    def _save_to_db(self, file_path: str, thumb_path: str, width: int, height: int, file_hash: str) -> bool:
         try:
             conn = get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO images (file_path, thumbnail_path, width, height)
-                VALUES (?, ?, ?, ?)
-            ''', (str(file_path), str(thumb_path), width, height))
+                INSERT INTO images (file_path, thumbnail_path, width, height, file_hash)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (str(file_path), str(thumb_path), width, height, file_hash))
             conn.commit()
             return True
         except Exception as e:
             print(f"Database error: {e}")
             return False
+
+    def check_duplicate_by_hash(self, file_hash: str) -> str | None:
+        """Checks if a file with the given hash already exists in the database. Returns filename if match."""
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM images WHERE file_hash = ?", (file_hash,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return Path(row['file_path']).name
+            return None
+        except Exception as e:
+            print(f"Duplicate check error: {e}")
+            return None
             
     def query_images(self, collection_id=None, tag_id=None, search_term=None, only_favorites=False):
         """Query images detached from DB references to avoid cross-thread issues."""
