@@ -34,7 +34,8 @@ def init_db():
             thumbnail_path TEXT,
             width INTEGER,
             height INTEGER,
-            date_added DATETIME DEFAULT CURRENT_TIMESTAMP
+            date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
+            file_hash TEXT
         )
     """)
 
@@ -126,6 +127,26 @@ def init_db():
         pass
 
     try:
+        cursor.execute("ALTER TABLE images ADD COLUMN file_hash TEXT")
+
+        # Calculate hashes for existing images
+        cursor.execute("SELECT id, file_path FROM images WHERE file_hash IS NULL")
+        rows = cursor.fetchall()
+
+        import hashlib
+        for row in rows:
+            img_id = row['id']
+            file_path = Path(row['file_path'])
+            if file_path.exists():
+                hash_md5 = hashlib.md5()
+                with open(file_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
+                cursor.execute("UPDATE images SET file_hash = ? WHERE id = ?", (hash_md5.hexdigest(), img_id))
+    except Exception:
+        pass
+
+    try:
         cursor.execute("ALTER TABLE workspace_state ADD COLUMN flip_h BOOLEAN DEFAULT 0")
     except Exception:
         pass
@@ -140,6 +161,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_image_tags_tag_id ON image_tags(tag_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_collections_images_col_id ON collection_images(collection_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_is_favorite ON images(is_favorite)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_file_hash ON images(file_hash)")
 
     conn.commit()
     conn.close()

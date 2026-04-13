@@ -19,7 +19,7 @@ class TestTagManager(unittest.TestCase):
 
         # Assertions
         self.assertTrue(result)
-        mock_cursor.execute.assert_called_once()
+        mock_cursor.executemany.assert_called_once()
         mock_conn.commit.assert_called_once()
 
     @patch('managers.tag_manager.get_connection')

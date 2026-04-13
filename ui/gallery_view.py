@@ -12,10 +12,11 @@ from ui.settings_dialog import SettingsDialog
 
 class GalleryView(ctk.CTkFrame):
 
-    def __init__(self, master, switch_to_workspace_callback):
+    def __init__(self, master, switch_to_workspace_callback, show_upload_callback=None):
         super().__init__(master)
         
         self.switch_to_workspace_callback = switch_to_workspace_callback
+        self.show_upload_callback = show_upload_callback
         
         self.image_mgr = ImageManager()
         self.collection_mgr = CollectionManager()
@@ -38,82 +39,105 @@ class GalleryView(ctk.CTkFrame):
         self.load_gallery()
         
     def _setup_ui(self):
-        self.grid_rowconfigure(0, weight=0)  # Top Search Bar
-        self.grid_rowconfigure(1, weight=1)  # Image Grid
+        self.grid_rowconfigure(0, weight=0)  # Top Navigation Bar
+        self.grid_rowconfigure(1, weight=1)  # Main Content Area
         self.grid_columnconfigure(1, weight=1)
         
+        # Top Navigation Bar
+        self.topbar = ctk.CTkFrame(self, height=64, fg_color="#1E293B", corner_radius=0)
+        self.topbar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.topbar.grid_columnconfigure(1, weight=1)
+
+        self.logo_label = ctk.CTkLabel(self.topbar, text="Artist Reference", font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"))
+        self.logo_label.grid(row=0, column=0, padx=24, pady=16, sticky="w")
+
+        self.search_entry = ctk.CTkEntry(self.topbar, placeholder_text="Search filenames or tags...", width=300, font=ctk.CTkFont(family="Segoe UI", size=14), height=36, corner_radius=6)
+        self.search_entry.grid(row=0, column=1, padx=20, pady=14)
+        self.search_entry.bind("<Return>", self._on_search)
+
+        # Right Side of Top Bar
+        self.top_right_frame = ctk.CTkFrame(self.topbar, fg_color="transparent")
+        self.top_right_frame.grid(row=0, column=2, sticky="e", padx=24)
+
+        self.columns_label = ctk.CTkLabel(self.top_right_frame, text="Columns:", font=ctk.CTkFont(family="Segoe UI", size=12))
+        self.columns_label.pack(side="left", padx=(0, 5))
+        
+        self.columns_var = ctk.IntVar(value=4)
+        self.columns_slider = ctk.CTkSlider(self.top_right_frame, from_=2, to=6, number_of_steps=4, width=100, variable=self.columns_var, command=self._on_columns_changed)
+        self.columns_slider.pack(side="left", padx=(0, 20))
+        
+        self.settings_btn = ctk.CTkButton(self.top_right_frame, text="⚙", font=ctk.CTkFont(family="Segoe UI", size=20), width=40, height=36, corner_radius=6, fg_color="#334155", hover_color="#475569", command=self._open_settings)
+        self.settings_btn.pack(side="left", padx=(0, 12))
+
+        self.upload_btn = ctk.CTkButton(self.top_right_frame, text="+ Upload", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), fg_color="#7C3AED", hover_color="#6D28D9", width=100, height=36, corner_radius=6, command=self._show_upload)
+        self.upload_btn.pack(side="left")
+
         # Sidebar
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
-        self.sidebar_frame.grid_rowconfigure(8, weight=1)
-        
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Reference Manager", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=24, pady=(32, 16))
-        
-        self.import_button = ctk.CTkButton(self.sidebar_frame, text="Import Images", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), height=40, command=self._import_images)
-        self.import_button.grid(row=1, column=0, padx=24, pady=12)
+        self.sidebar_frame.grid(row=1, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(4, weight=1)
+        self.sidebar_frame.grid_rowconfigure(7, weight=1)
         
         self.all_images_btn = ctk.CTkButton(self.sidebar_frame, text="All Images", font=ctk.CTkFont(family="Segoe UI", size=13), fg_color="transparent", border_width=1, height=36, corner_radius=6, command=self.reset_filters)
-        self.all_images_btn.grid(row=2, column=0, padx=24, pady=4)
+        self.all_images_btn.grid(row=1, column=0, padx=24, pady=(24, 4))
         
         self.favorites_btn = ctk.CTkButton(self.sidebar_frame, text="★ Favorites", font=ctk.CTkFont(family="Segoe UI", size=13), text_color="#F59E0B", fg_color="transparent", border_width=1, height=36, corner_radius=6, command=self.set_favorites_filter)
-        self.favorites_btn.grid(row=3, column=0, padx=24, pady=4)
+        self.favorites_btn.grid(row=2, column=0, padx=24, pady=4)
         
         self.collections_label = ctk.CTkLabel(self.sidebar_frame, text="Collections", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#94A3B8", anchor="w")
-        self.collections_label.grid(row=4, column=0, padx=24, pady=(16, 4), sticky="ew")
+        self.collections_label.grid(row=3, column=0, padx=24, pady=(16, 4), sticky="ew")
         
         self.collections_scroll = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color="transparent", height=120)
-        self.collections_scroll.grid(row=5, column=0, padx=16, pady=4, sticky="nsew")
+        self.collections_scroll.grid(row=4, column=0, padx=16, pady=4, sticky="nsew")
         
         self.new_collection_btn = ctk.CTkButton(self.sidebar_frame, text="+ New Collection", font=ctk.CTkFont(family="Segoe UI", size=12), fg_color="transparent", text_color="#CBD5E1", height=28, command=self._create_collection)
-        self.new_collection_btn.grid(row=6, column=0, padx=24, pady=(0,16))
+        self.new_collection_btn.grid(row=5, column=0, padx=24, pady=(0,16))
         
         self.tags_label = ctk.CTkLabel(self.sidebar_frame, text="Tags", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#94A3B8", anchor="w")
-        self.tags_label.grid(row=7, column=0, padx=24, pady=(16, 4), sticky="ew")
+        self.tags_label.grid(row=6, column=0, padx=24, pady=(16, 4), sticky="ew")
         
         self.tags_scroll = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color="transparent", height=120)
-        self.tags_scroll.grid(row=8, column=0, padx=16, pady=4, sticky="nsew")
+        self.tags_scroll.grid(row=7, column=0, padx=16, pady=4, sticky="nsew")
         
         self.new_tag_btn = ctk.CTkButton(self.sidebar_frame, text="+ New Tag", font=ctk.CTkFont(family="Segoe UI", size=12), fg_color="transparent", text_color="#CBD5E1", height=28, command=self._create_tag)
-        self.new_tag_btn.grid(row=9, column=0, padx=24, pady=(0,16))
+        self.new_tag_btn.grid(row=8, column=0, padx=24, pady=(0,16))
         
         self.workspace_button = ctk.CTkButton(self.sidebar_frame, text="Open Workspace", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), height=40, command=self._open_workspace)
-        self.workspace_button.grid(row=10, column=0, padx=24, pady=24, sticky="s")
-        
-        # Top Bar (Search & Settings)
-        self.topbar = ctk.CTkFrame(self, height=56, fg_color="transparent")
-        self.topbar.grid(row=0, column=1, sticky="ew", padx=24, pady=(16, 0))
-        
-        self.settings_btn = ctk.CTkButton(self.topbar, text="⚙ Settings", font=ctk.CTkFont(family="Segoe UI", size=13), width=96, height=36, corner_radius=6, fg_color="#334155", hover_color="#475569", command=self._open_settings)
-        self.settings_btn.pack(side="right", padx=(12, 0))
-        
-        self.search_entry = ctk.CTkEntry(self.topbar, placeholder_text="Search filenames or tags...", font=ctk.CTkFont(family="Segoe UI", size=14), height=40, corner_radius=6)
-        self.search_entry.pack(side="left", fill="x", expand=True)
-        self.search_entry.bind("<Return>", self._on_search)
+        self.workspace_button.grid(row=9, column=0, padx=24, pady=24, sticky="s")
         
         # Main Gallery Area
-        self.main_area = ctk.CTkScrollableFrame(self)
+        self.main_area = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.main_area.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
         
-        self.columns = 4
+        self.columns = int(self.columns_var.get())
+        self.masonry_columns = []
+        self._setup_masonry_columns()
+
+    def _setup_masonry_columns(self):
+        # Clear existing columns
+        for col_frame in self.masonry_columns:
+            col_frame.destroy()
+        self.masonry_columns.clear()
+
+        # Set weight
+        for i in range(6):
+            self.main_area.grid_columnconfigure(i, weight=0)
+
         for i in range(self.columns):
             self.main_area.grid_columnconfigure(i, weight=1)
+            col_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+            col_frame.grid(row=0, column=i, sticky="nw", padx=5)
+            self.masonry_columns.append(col_frame)
 
-    # ------------------------------------------------------------------ imports
+    def _on_columns_changed(self, value):
+        new_cols = int(value)
+        if new_cols != self.columns:
+            self.columns = new_cols
+            self.load_gallery()
 
-    def _import_images(self):
-        filetypes = (
-            ('Image files', '*.jpg *.jpeg *.jfif *.png *.webp *.bmp'),
-            ('All files', '*.*')
-        )
-        filenames = filedialog.askopenfilenames(
-            title='Select Reference Images',
-            filetypes=filetypes
-        )
-        for f in filenames:
-            self.image_mgr.import_image(f)
-        self.load_gallery()
+    def _show_upload(self):
+        if self.show_upload_callback:
+            self.show_upload_callback()
 
     # ------------------------------------------------------------------ filters
 
@@ -235,10 +259,13 @@ class GalleryView(ctk.CTkFrame):
 
     def _clear_gallery(self):
         """Destroy all thumbnail widgets and force GC to reclaim PIL/Tk image memory."""
-        for widget in self.main_area.winfo_children():
-            widget.destroy()
+        self._setup_masonry_columns()
         self.selected_images.clear()
         self.path_to_id.clear()
+
+        if hasattr(self, 'empty_state_frame'):
+            self.empty_state_frame.destroy()
+
         gc.collect()
 
     def load_gallery(self):
@@ -254,16 +281,17 @@ class GalleryView(ctk.CTkFrame):
         )
         
         if not images:
+            self._show_empty_state()
             return
 
-        def _load_image_task(img_data, row, col):
+        def _load_image_task(img_data):
             try:
                 thumb_path = img_data['thumbnail_path']
                 if not Path(thumb_path).exists():
                     return None
                 img = Image.open(thumb_path)
                 img.load()
-                return (img_data, img, row, col)
+                return (img_data, img)
             except Exception as e:
                 print(f"Error loading thumbnail: {e}")
                 return None
@@ -271,8 +299,7 @@ class GalleryView(ctk.CTkFrame):
         def _on_image_loaded(future):
             result = future.result()
             if result:
-                self.after(0, self._render_thumbnail,
-                           result[0], result[1], result[2], result[3], load_id)
+                self.after(0, self._render_thumbnail, result[0], result[1], load_id)
 
         # Stream in batches — keeps the UI responsive while images trickle in
         batch_size = 24
@@ -283,9 +310,7 @@ class GalleryView(ctk.CTkFrame):
             end_idx = min(start_idx + batch_size, len(images))
             for i in range(start_idx, end_idx):
                 img_data = images[i]
-                row = i // self.columns
-                col = i % self.columns
-                future = self._thread_pool.submit(_load_image_task, img_data, row, col)
+                future = self._thread_pool.submit(_load_image_task, img_data)
                 future.add_done_callback(_on_image_loaded)
             
             if end_idx < len(images):
@@ -294,39 +319,125 @@ class GalleryView(ctk.CTkFrame):
 
         _schedule_batch(0)
 
+    def _show_empty_state(self):
+        self.empty_state_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.empty_state_frame.grid(row=0, column=0, columnspan=self.columns, pady=100)
+
+        icon = ctk.CTkLabel(self.empty_state_frame, text="🖼️", font=ctk.CTkFont(size=64))
+        icon.pack(pady=(0, 10))
+
+        title = ctk.CTkLabel(self.empty_state_frame, text="No images yet", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"))
+        title.pack(pady=(0, 5))
+
+        sub = ctk.CTkLabel(self.empty_state_frame, text="Upload reference images to get started.", text_color="#94A3B8", font=ctk.CTkFont(family="Segoe UI", size=14))
+        sub.pack(pady=(0, 20))
+
+        btn = ctk.CTkButton(self.empty_state_frame, text="Upload your first reference", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), fg_color="#7C3AED", hover_color="#6D28D9", height=40, command=self._show_upload)
+        btn.pack()
+
     # ------------------------------------------------------------------ rendering
 
-    def _render_thumbnail(self, img_data, img, row, col, load_id):
+    def _get_shortest_column(self):
+        shortest_col = self.masonry_columns[0]
+        min_height = shortest_col.winfo_reqheight()
+
+        for col in self.masonry_columns[1:]:
+            h = col.winfo_reqheight()
+            if h < min_height:
+                min_height = h
+                shortest_col = col
+        return shortest_col
+
+    def _render_thumbnail(self, img_data, img, load_id):
         if load_id != self._current_load_id:
             return
             
         file_path = img_data['file_path']
-        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(150, 150))
+
+        # Calculate proportional height based on fixed column width
+        # Assuming a reasonable default width for calculation before full layout
+        target_width = max(200, (self.main_area.winfo_width() // self.columns) - 20)
+        orig_width, orig_height = img.size
+
+        if orig_width > 0:
+            ratio = target_width / orig_width
+            target_height = int(orig_height * ratio)
+        else:
+            target_height = target_width
+
+        target_height = max(100, target_height) # minimum height
+
+        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(target_width, target_height))
         del img  # Release the PIL pixel buffer — CTkImage already has its own copy
 
-        frame = ctk.CTkFrame(self.main_area, fg_color="transparent", corner_radius=5)
-        frame.grid(row=row, column=col, padx=10, pady=10)
+        col_frame = self._get_shortest_column()
+
+        card = ctk.CTkFrame(col_frame, fg_color="#1E293B", corner_radius=10)
+        card.pack(fill="x", pady=10)
+
+        # We need a container for the image to handle overlays easily
+        img_container = ctk.CTkFrame(card, fg_color="transparent", corner_radius=10)
+        img_container.pack(fill="both", expand=True, padx=0, pady=0)
         
-        lbl = ctk.CTkLabel(frame, image=ctk_img, text="")
+        lbl = ctk.CTkLabel(img_container, image=ctk_img, text="")
         lbl.image = ctk_img  # Keep strong Tk reference
-        lbl.pack(padx=6, pady=(6, 2))
+        lbl.pack(fill="both", expand=True)
+
+        # Hover Overlay
+        overlay = ctk.CTkFrame(img_container, fg_color="#000000", corner_radius=10)
+        # We don't pack the overlay initially
+
+        overlay_buttons_frame = ctk.CTkFrame(overlay, fg_color="transparent")
+        overlay_buttons_frame.place(relx=0.5, rely=0.5, anchor="center")
+
+        ws_btn = ctk.CTkButton(overlay_buttons_frame, text="▶ Open in Workspace", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), fg_color="#7C3AED", hover_color="#6D28D9", height=32, command=lambda p=file_path: self.switch_to_workspace_callback([p]))
+        ws_btn.pack(pady=5)
+
+        del_btn = ctk.CTkButton(overlay_buttons_frame, text="🗑 Delete", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), fg_color="#EF4444", hover_color="#DC2626", height=32, command=lambda p=file_path: self._delete_images({p}))
+        del_btn.pack(pady=5)
+
+        # Transparent pixel to handle overlay transparency simulation via standard colors
+        # Since Tkinter transparency is tricky, we use a dark semi-transparent-looking color via stipple or just dark bg
+        # A workaround in CTk is just to set fg_color to a very dark color and rely on the UI
+        # But we must capture enter/leave events correctly.
+
+        def on_enter(e):
+            overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+            # Make overlay background slightly transparent on Windows/Mac if supported, else just solid dark
+            try:
+                overlay.configure(fg_color=("gray20", "gray10"))
+            except:
+                pass
+
+        def on_leave(e):
+            # Check if mouse is actually outside the container
+            x, y = e.x_root, e.y_root
+            x1, y1 = img_container.winfo_rootx(), img_container.winfo_rooty()
+            x2, y2 = x1 + img_container.winfo_width(), y1 + img_container.winfo_height()
+
+            if not (x1 <= x <= x2 and y1 <= y <= y2):
+                overlay.place_forget()
+
+        img_container.bind("<Enter>", on_enter)
+        overlay.bind("<Leave>", on_leave)
+        img_container.bind("<Leave>", on_leave)
         
+        # Bottom Label
         filename = Path(file_path).name
-        display_name = filename if len(filename) <= 15 else filename[:12] + "..."
         name_lbl = ctk.CTkLabel(
-            frame, text=display_name,
-            font=ctk.CTkFont(family="Segoe UI", size=11), text_color="#CBD5E1"
+            card, text=filename,
+            font=ctk.CTkFont(family="Segoe UI", size=11), text_color="#94A3B8"
         )
-        name_lbl.pack(pady=(0, 6))
+        name_lbl.pack(pady=(4, 8), padx=10, anchor="w")
         
         if img_data['is_favorite']:
-            fav_lbl = ctk.CTkLabel(frame, text="★", text_color="gold",
+            fav_lbl = ctk.CTkLabel(img_container, text="★", text_color="gold",
                                    font=ctk.CTkFont(size=24, weight="bold"))
-            fav_lbl.place(relx=0.9, rely=0.1, anchor="ne")
+            fav_lbl.place(relx=0.9, rely=0.05, anchor="ne")
         
         self.path_to_id[file_path] = img_data['id']
         
-        lbl.bind("<Button-1>", lambda e, p=file_path, f=frame: self.toggle_selection(p, f))
+        lbl.bind("<Button-1>", lambda e, p=file_path, f=card: self.toggle_selection(p, f))
         lbl.bind("<Button-3>", lambda e, p=file_path: self.show_context_menu(e, p))
 
     # ------------------------------------------------------------------ selection / context menu
@@ -334,7 +445,7 @@ class GalleryView(ctk.CTkFrame):
     def toggle_selection(self, file_path, frame_widget):
         if file_path in self.selected_images:
             self.selected_images.remove(file_path)
-            frame_widget.configure(fg_color="transparent")
+            frame_widget.configure(fg_color="#1E293B")
         else:
             self.selected_images.add(file_path)
             frame_widget.configure(fg_color="#7C3AED")
