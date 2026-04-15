@@ -28,6 +28,8 @@ class GalleryView(ctk.CTkFrame):
         self.current_tag_id = None
         self.current_search_term = None
         self.only_favorites = False
+        self.current_page = 1
+        self.items_per_page = 50
         
         self._current_load_id = 0
         # 2 workers keeps concurrent PIL decompression buffers low
@@ -107,11 +109,34 @@ class GalleryView(ctk.CTkFrame):
         
         # Main Gallery Area
         self.main_area = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.main_area.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+        self.main_area.grid(row=1, column=1, sticky="nsew", padx=10, pady=(10, 0))
+
+        # Pagination Bar
+        self.pagination_frame = ctk.CTkFrame(self, height=40, fg_color="#1E293B", corner_radius=0)
+        self.pagination_frame.grid(row=2, column=1, sticky="ew")
+
+        self.prev_page_btn = ctk.CTkButton(self.pagination_frame, text="< Previous", width=100, command=self._prev_page)
+        self.prev_page_btn.pack(side="left", padx=20, pady=10)
+
+        self.page_label = ctk.CTkLabel(self.pagination_frame, text="Page 1", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"))
+        self.page_label.pack(side="left", expand=True)
+
+        self.next_page_btn = ctk.CTkButton(self.pagination_frame, text="Next >", width=100, command=self._next_page)
+        self.next_page_btn.pack(side="right", padx=20, pady=10)
         
         self.columns = int(self.columns_var.get())
         self.masonry_columns = []
         self._setup_masonry_columns()
+
+    def _prev_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.load_gallery()
+
+    def _next_page(self):
+        if hasattr(self, 'has_next_page') and self.has_next_page:
+            self.current_page += 1
+            self.load_gallery()
 
     def _setup_masonry_columns(self):
         # Clear existing columns
@@ -145,6 +170,7 @@ class GalleryView(ctk.CTkFrame):
 
     def _on_search(self, event=None):
         self.current_search_term = self.search_entry.get().strip() or None
+        self.current_page = 1
         self.load_gallery()
         
     def reset_filters(self):
@@ -152,6 +178,7 @@ class GalleryView(ctk.CTkFrame):
         self.current_tag_id = None
         self.current_search_term = None
         self.only_favorites = False
+        self.current_page = 1
         self.search_entry.delete(0, 'end')
         self.load_gallery()
 
@@ -159,18 +186,21 @@ class GalleryView(ctk.CTkFrame):
         self.only_favorites = True
         self.current_collection_id = None
         self.current_tag_id = None
+        self.current_page = 1
         self.load_gallery()
 
     def set_collection(self, collection_id):
         self.current_collection_id = collection_id
         self.current_tag_id = None
         self.only_favorites = False
+        self.current_page = 1
         self.load_gallery()
         
     def set_tag(self, tag_id):
         self.current_tag_id = tag_id
         self.current_collection_id = None
         self.only_favorites = False
+        self.current_page = 1
         self.load_gallery()
 
     # ------------------------------------------------------------------ settings / dialogs
@@ -276,14 +306,28 @@ class GalleryView(ctk.CTkFrame):
         
         self._clear_gallery()
         
+        offset = (self.current_page - 1) * self.items_per_page
+
         # Fetch all matching metadata on the main thread (pure SQL, no image I/O — fast)
+        # Fetch items_per_page + 1 to determine if there's a next page
         images = self.image_mgr.query_images(
             self.current_collection_id, self.current_tag_id,
-            self.current_search_term, self.only_favorites
+            self.current_search_term, self.only_favorites,
+            limit=self.items_per_page + 1, offset=offset
         )
         
-        if not images:
+        self.has_next_page = len(images) > self.items_per_page
+        if self.has_next_page:
+            images = images[:self.items_per_page]
+
+        self.prev_page_btn.configure(state="normal" if self.current_page > 1 else "disabled")
+        self.next_page_btn.configure(state="normal" if self.has_next_page else "disabled")
+        self.page_label.configure(text=f"Page {self.current_page}")
+
+        if not images and self.current_page == 1:
             self._show_empty_state()
+            return
+        elif not images:
             return
 
         def _load_image_task(img_data):
