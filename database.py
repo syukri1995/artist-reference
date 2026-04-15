@@ -89,6 +89,14 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS smart_collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            tag_ids TEXT NOT NULL
+        )
+    """)
+
     cursor.execute("PRAGMA table_info(workspace_state)")
     columns = [col[1] for col in cursor.fetchall()]
     
@@ -138,6 +146,16 @@ def init_db():
     # Graceful migration for existing tables
     try:
         cursor.execute("ALTER TABLE images ADD COLUMN is_favorite BOOLEAN DEFAULT 0")
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE images ADD COLUMN last_viewed DATETIME")
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE collections ADD COLUMN parent_id INTEGER REFERENCES collections(id) ON DELETE CASCADE")
     except Exception:
         pass
 

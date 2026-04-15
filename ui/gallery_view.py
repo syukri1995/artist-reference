@@ -1,590 +1,650 @@
-import customtkinter as ctk
-import tkinter as tk
-from tkinter import filedialog
-from PIL import Image
+"""
+gallery_view.py — Main gallery browser with sidebar navigation and async image loading.
+"""
+import threading
 from pathlib import Path
-from managers.image_manager import ImageManager
+
+from PyQt5.QtCore import Qt, QPoint, QThread, pyqtSignal
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtWidgets import (
+    QCheckBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
+    QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
+)
+from PIL import Image
+
 from managers.collection_manager import CollectionManager
+from managers.image_manager import ImageManager
 from managers.tag_manager import TagManager
-import concurrent.futures
-import gc
-from ui.settings_dialog import SettingsDialog
+from utils_image import pil_to_qpixmap
 
-class GalleryView(ctk.CTkFrame):
 
-    def __init__(self, master, switch_to_workspace_callback, show_upload_callback=None):
-        super().__init__(master)
-        
-        self.switch_to_workspace_callback = switch_to_workspace_callback
-        self.show_upload_callback = show_upload_callback
-        
-        self.image_mgr = ImageManager()
+# ---------------------------------------------------------------------------
+# Background worker
+# ---------------------------------------------------------------------------
+
+class GalleryWorker(QThread):
+    """Loads thumbnails off the main thread and emits the enriched list."""
+
+    images_loaded = pyqtSignal(list)
+
+    def __init__(self, images: list) -> None:
+        super().__init__()
+        self.images = images
+
+    def run(self) -> None:
+        out = []
+        for data in self.images:
+            try:
+                thumb = data.get('thumbnail_path') or ''
+                src = thumb if thumb and Path(thumb).exists() else data['file_path']
+                if not Path(src).exists():
+                    continue
+                img = Image.open(src)
+                img.thumbnail((300, 300))
+                data['qpixmap'] = pil_to_qpixmap(img)
+                out.append(data)
+            except Exception as exc:
+                print(f"GalleryWorker: {data['file_path']}: {exc}")
+            self.msleep(1)
+        self.images_loaded.emit(out)
+
+
+# ---------------------------------------------------------------------------
+# Clickable image card
+# ---------------------------------------------------------------------------
+
+class ImageCard(QLabel):
+    """A square thumbnail card that emits click / right-click signals."""
+
+    clicked = pyqtSignal()
+    right_clicked = pyqtSignal(QPoint)
+
+    _STYLE_NORMAL   = "background-color: #1E293B; border-radius: 8px; padding: 4px;"
+    _STYLE_SELECTED = "background-color: #7C3AED; border-radius: 8px; padding: 4px;"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFixedSize(220, 220)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(self._STYLE_NORMAL)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setStyleSheet(self._STYLE_SELECTED if selected else self._STYLE_NORMAL)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        elif event.button() == Qt.RightButton:
+            self.right_clicked.emit(event.globalPos())
+
+
+# ---------------------------------------------------------------------------
+# Gallery view
+# ---------------------------------------------------------------------------
+
+class GalleryView(QWidget):
+    """Main gallery panel: topbar + sidebar + image grid + pagination."""
+
+    switch_to_workspace    = pyqtSignal(list, bool)
+    show_upload            = pyqtSignal()
+    show_detached_workspace = pyqtSignal(list, bool)
+
+    _ITEMS_PER_PAGE = 50
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.image_mgr      = ImageManager()
         self.collection_mgr = CollectionManager()
-        self.tag_mgr = TagManager()
-        
-        self.selected_images = set()
-        self.path_to_id = {}
+        self.tag_mgr        = TagManager()
+
+        # Filter state
         self.current_collection_id = None
-        self.current_tag_id = None
-        self.current_search_term = None
-        self.only_favorites = False
-        self.current_page = 1
-        self.items_per_page = 50
-        
-        self._current_load_id = 0
-        # 2 workers keeps concurrent PIL decompression buffers low
-        self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        
+        self.current_tag_id        = None
+        self.current_search_term   = None
+        self.only_favorites        = False
+        self.only_recent           = False
+        self.current_page          = 1
+        self.columns               = 4
+
+        # Selection & path→id map
+        self.selected_images: set  = set()
+        self.path_to_id: dict      = {}
+        self._cards: dict          = {}   # file_path -> ImageCard widget
+
+        self._worker: GalleryWorker | None = None
+
         self._setup_ui()
         self.refresh_collections_list()
+        self.refresh_smart_collections_list()
         self.refresh_tags_list()
         self.load_gallery()
-        
-    def _setup_ui(self):
-        self.grid_rowconfigure(0, weight=0)  # Top Navigation Bar
-        self.grid_rowconfigure(1, weight=1)  # Main Content Area
-        self.grid_columnconfigure(1, weight=1)
-        
-        # Top Navigation Bar
-        self.topbar = ctk.CTkFrame(self, height=64, fg_color="#1E293B", corner_radius=0)
-        self.topbar.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self.topbar.grid_columnconfigure(1, weight=1)
 
-        self.logo_label = ctk.CTkLabel(self.topbar, text="Artist Reference", font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=24, pady=16, sticky="w")
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
-        self.search_entry = ctk.CTkEntry(self.topbar, placeholder_text="Search filenames or tags...", width=300, font=ctk.CTkFont(family="Segoe UI", size=14), height=36, corner_radius=6)
-        self.search_entry.grid(row=0, column=1, padx=20, pady=14)
-        self.search_entry.bind("<Return>", self._on_search)
+    def _setup_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_topbar())
 
-        # Right Side of Top Bar
-        self.top_right_frame = ctk.CTkFrame(self.topbar, fg_color="transparent")
-        self.top_right_frame.grid(row=0, column=2, sticky="e", padx=24)
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        body.addWidget(self._build_sidebar())
+        body.addLayout(self._build_gallery_area(), stretch=1)
+        root.addLayout(body, stretch=1)
 
-        self.columns_label = ctk.CTkLabel(self.top_right_frame, text="Columns:", font=ctk.CTkFont(family="Segoe UI", size=12))
-        self.columns_label.pack(side="left", padx=(0, 5))
-        
-        self.columns_var = ctk.IntVar(value=4)
-        self.columns_slider = ctk.CTkSlider(self.top_right_frame, from_=2, to=6, number_of_steps=4, width=100, variable=self.columns_var, command=self._on_columns_changed)
-        self.columns_slider.pack(side="left", padx=(0, 20))
-        
-        self.settings_btn = ctk.CTkButton(self.top_right_frame, text="⚙", font=ctk.CTkFont(family="Segoe UI", size=20), width=40, height=36, corner_radius=6, fg_color="#334155", hover_color="#475569", command=self._open_settings)
-        self.settings_btn.pack(side="left", padx=(0, 12))
+        self._autocomplete_menu = QMenu(self)
 
-        self.upload_btn = ctk.CTkButton(self.top_right_frame, text="+ Upload", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), fg_color="#7C3AED", hover_color="#6D28D9", width=100, height=36, corner_radius=6, command=self._show_upload)
-        self.upload_btn.pack(side="left")
+    def _build_topbar(self) -> QWidget:
+        bar = QWidget()
+        bar.setStyleSheet("background-color: #1E293B;")
+        bar.setFixedHeight(64)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 0, 16, 0)
 
-        # Sidebar
-        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
-        self.sidebar_frame.grid(row=1, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(4, weight=1)
-        self.sidebar_frame.grid_rowconfigure(7, weight=1)
-        
-        self.all_images_btn = ctk.CTkButton(self.sidebar_frame, text="All Images", font=ctk.CTkFont(family="Segoe UI", size=13), fg_color="transparent", border_width=1, height=36, corner_radius=6, command=self.reset_filters)
-        self.all_images_btn.grid(row=1, column=0, padx=24, pady=(24, 4))
-        
-        self.favorites_btn = ctk.CTkButton(self.sidebar_frame, text="★ Favorites", font=ctk.CTkFont(family="Segoe UI", size=13), text_color="#F59E0B", fg_color="transparent", border_width=1, height=36, corner_radius=6, command=self.set_favorites_filter)
-        self.favorites_btn.grid(row=2, column=0, padx=24, pady=4)
-        
-        self.collections_label = ctk.CTkLabel(self.sidebar_frame, text="Collections", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#94A3B8", anchor="w")
-        self.collections_label.grid(row=3, column=0, padx=24, pady=(16, 4), sticky="ew")
-        
-        self.collections_scroll = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color="transparent", height=120)
-        self.collections_scroll.grid(row=4, column=0, padx=16, pady=4, sticky="nsew")
-        
-        self.new_collection_btn = ctk.CTkButton(self.sidebar_frame, text="+ New Collection", font=ctk.CTkFont(family="Segoe UI", size=12), fg_color="transparent", text_color="#CBD5E1", height=28, command=self._create_collection)
-        self.new_collection_btn.grid(row=5, column=0, padx=24, pady=(0,16))
-        
-        self.tags_label = ctk.CTkLabel(self.sidebar_frame, text="Tags", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#94A3B8", anchor="w")
-        self.tags_label.grid(row=6, column=0, padx=24, pady=(16, 4), sticky="ew")
-        
-        self.tags_scroll = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color="transparent", height=120)
-        self.tags_scroll.grid(row=7, column=0, padx=16, pady=4, sticky="nsew")
-        
-        self.new_tag_btn = ctk.CTkButton(self.sidebar_frame, text="+ New Tag", font=ctk.CTkFont(family="Segoe UI", size=12), fg_color="transparent", text_color="#CBD5E1", height=28, command=self._create_tag)
-        self.new_tag_btn.grid(row=8, column=0, padx=24, pady=(0,16))
-        
-        self.workspace_button = ctk.CTkButton(self.sidebar_frame, text="Open Workspace", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), height=40, command=self._open_workspace)
-        self.workspace_button.grid(row=9, column=0, padx=24, pady=24, sticky="s")
-        
-        # Main Gallery Area
-        self.main_area = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.main_area.grid(row=1, column=1, sticky="nsew", padx=10, pady=(10, 0))
+        logo = QLabel("Artist Reference")
+        logo.setStyleSheet("font-size: 20px; font-weight: bold; color: #E2E8F0;")
+        layout.addWidget(logo)
 
-        # Pagination Bar
-        self.pagination_frame = ctk.CTkFrame(self, height=40, fg_color="#1E293B", corner_radius=0)
-        self.pagination_frame.grid(row=2, column=1, sticky="ew")
+        self.search_entry = QLineEdit()
+        self.search_entry.setPlaceholderText("Search filenames or tags…")
+        self.search_entry.setFixedWidth(300)
+        self.search_entry.returnPressed.connect(self._on_search)
+        self.search_entry.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self.search_entry)
 
-        self.prev_page_btn = ctk.CTkButton(self.pagination_frame, text="< Previous", width=100, command=self._prev_page)
-        self.prev_page_btn.pack(side="left", padx=20, pady=10)
+        layout.addStretch()
 
-        self.page_label = ctk.CTkLabel(self.pagination_frame, text="Page 1", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"))
-        self.page_label.pack(side="left", expand=True)
+        layout.addWidget(QLabel("Columns:"))
+        self.columns_slider = QSlider(Qt.Horizontal)
+        self.columns_slider.setRange(2, 8)
+        self.columns_slider.setValue(4)
+        self.columns_slider.setFixedWidth(100)
+        self.columns_slider.valueChanged.connect(lambda v: self._set_columns(v))
+        layout.addWidget(self.columns_slider)
 
-        self.next_page_btn = ctk.CTkButton(self.pagination_frame, text="Next >", width=100, command=self._next_page)
-        self.next_page_btn.pack(side="right", padx=20, pady=10)
-        
-        self.columns = int(self.columns_var.get())
-        self.masonry_columns = []
-        self._setup_masonry_columns()
+        self.bulk_tag_btn = QPushButton("🏷 Retag Selected")
+        self.bulk_tag_btn.setEnabled(False)
+        self.bulk_tag_btn.clicked.connect(self._bulk_retag)
+        layout.addWidget(self.bulk_tag_btn)
 
-    def _prev_page(self):
+        settings_btn = QPushButton("⚙ Settings")
+        settings_btn.clicked.connect(self._open_settings)
+        layout.addWidget(settings_btn)
+
+        upload_btn = QPushButton("＋ Upload")
+        upload_btn.setStyleSheet("background-color: #7C3AED; border-color: #6D28D9;")
+        upload_btn.clicked.connect(self.show_upload.emit)
+        layout.addWidget(upload_btn)
+
+        return bar
+
+    def _build_sidebar(self) -> QWidget:
+        sidebar = QWidget()
+        sidebar.setFixedWidth(210)
+        sidebar.setStyleSheet("background-color: #0F172A;")
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignTop)
+
+        def nav_btn(label: str, slot, style: str = "") -> QPushButton:
+            b = QPushButton(label)
+            b.clicked.connect(slot)
+            if style:
+                b.setStyleSheet(style)
+            return b
+
+        layout.addWidget(nav_btn("All Images",        self.reset_filters))
+        layout.addWidget(nav_btn("★ Favorites",       self.set_favorites_filter, "color: #F59E0B;"))
+        layout.addWidget(nav_btn("⏱ Recently Viewed", self.set_recent_filter,    "color: #10B981;"))
+
+        layout.addWidget(self._section_label("Collections"))
+        self.collections_list = QListWidget()
+        self.collections_list.setFixedHeight(120)
+        self.collections_list.itemClicked.connect(
+            lambda item: self.set_collection(item.data(Qt.UserRole)))
+        layout.addWidget(self.collections_list)
+        layout.addWidget(nav_btn("＋ New Collection", self._create_collection))
+
+        layout.addWidget(self._section_label("Smart Collections"))
+        self.smart_collections_list = QListWidget()
+        self.smart_collections_list.setFixedHeight(80)
+        self.smart_collections_list.itemClicked.connect(
+            lambda item: self.set_tag(item.data(Qt.UserRole)))
+        layout.addWidget(self.smart_collections_list)
+        layout.addWidget(nav_btn("＋ New Smart", self._create_smart_collection))
+
+        layout.addWidget(self._section_label("Tags"))
+        self.tags_list = QListWidget()
+        self.tags_list.setFixedHeight(120)
+        self.tags_list.itemClicked.connect(
+            lambda item: self.set_tag(item.data(Qt.UserRole)))
+        layout.addWidget(self.tags_list)
+        layout.addWidget(nav_btn("＋ New Tag", self._create_tag))
+
+        layout.addStretch()
+
+        layout.addWidget(nav_btn("▶ Open Workspace",    self._open_workspace))
+        layout.addWidget(nav_btn("＋ Add to Workspace", self._add_to_workspace))
+        layout.addWidget(nav_btn("⧉ Detach Workspace",  self._open_detached_workspace))
+
+        return sidebar
+
+    def _build_gallery_area(self) -> QVBoxLayout:
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.gallery_scroll = QScrollArea()
+        self.gallery_scroll.setWidgetResizable(True)
+        self._gallery_widget = QWidget()
+        self.gallery_grid = QGridLayout(self._gallery_widget)
+        self.gallery_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.gallery_grid.setSpacing(8)
+        self.gallery_scroll.setWidget(self._gallery_widget)
+        layout.addWidget(self.gallery_scroll, stretch=1)
+
+        # Pagination bar
+        pager = QWidget()
+        pager.setStyleSheet("background-color: #1E293B;")
+        pager.setFixedHeight(44)
+        p_row = QHBoxLayout(pager)
+        p_row.setContentsMargins(16, 0, 16, 0)
+
+        self.prev_page_btn = QPushButton("‹ Previous")
+        self.prev_page_btn.clicked.connect(self._prev_page)
+        p_row.addWidget(self.prev_page_btn)
+
+        self.page_label = QLabel("Page 1")
+        self.page_label.setAlignment(Qt.AlignCenter)
+        self.page_label.setStyleSheet("color: #E2E8F0;")
+        p_row.addWidget(self.page_label, stretch=1)
+
+        self.next_page_btn = QPushButton("Next ›")
+        self.next_page_btn.clicked.connect(self._next_page)
+        p_row.addWidget(self.next_page_btn)
+
+        layout.addWidget(pager)
+        return layout
+
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: bold; padding: 8px 0 2px 0;")
+        return lbl
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def load_gallery(self) -> None:
+        """Clear the grid and start background image loading."""
+        # Clear current cards
+        for card in self._cards.values():
+            card.deleteLater()
+        self._cards.clear()
+        self.path_to_id.clear()
+
+        images = self.image_mgr.query_images(
+            collection_id=self.current_collection_id,
+            tag_ids=self.current_tag_id,
+            search_term=self.current_search_term,
+            only_favorites=self.only_favorites,
+            only_recent=self.only_recent,
+            limit=self._ITEMS_PER_PAGE,
+            offset=(self.current_page - 1) * self._ITEMS_PER_PAGE,
+        )
+
+        if not images:
+            placeholder = QLabel("No images found.")
+            placeholder.setAlignment(Qt.AlignCenter)
+            self.gallery_grid.addWidget(placeholder, 0, 0)
+            self.page_label.setText(f"Page {self.current_page}")
+            return
+
+        # Kill any previous worker before starting a new one
+        if self._worker and self._worker.isRunning():
+            self._worker.quit()
+            self._worker.wait()
+
+        self._worker = GalleryWorker(images)
+        self._worker.images_loaded.connect(self._render_images)
+        self._worker.start()
+
+    # ------------------------------------------------------------------
+    # Filtering
+    # ------------------------------------------------------------------
+
+    def reset_filters(self) -> None:
+        self.current_collection_id = None
+        self.current_tag_id        = None
+        self.current_search_term   = None
+        self.only_favorites        = False
+        self.only_recent           = False
+        self.current_page          = 1
+        self.search_entry.blockSignals(True)
+        self.search_entry.clear()
+        self.search_entry.blockSignals(False)
+        self.load_gallery()
+
+    def set_favorites_filter(self) -> None:
+        self.reset_filters()
+        self.only_favorites = True
+        self.load_gallery()
+
+    def set_recent_filter(self) -> None:
+        self.reset_filters()
+        self.only_recent = True
+        self.load_gallery()
+
+    def set_collection(self, cid) -> None:
+        self.reset_filters()
+        self.current_collection_id = cid
+        self.load_gallery()
+
+    def set_tag(self, tid) -> None:
+        self.reset_filters()
+        self.current_tag_id = tid
+        self.load_gallery()
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    def _on_search(self) -> None:
+        term = self.search_entry.text().strip()
+        self.reset_filters()
+        if term:
+            self.search_entry.blockSignals(True)
+            self.search_entry.setText(term)
+            self.search_entry.blockSignals(False)
+        self.current_search_term = term or None
+        self._autocomplete_menu.hide()
+        self.load_gallery()
+
+    def _on_search_changed(self, text: str) -> None:
+        term = text.strip()
+        if len(term) < 2:
+            self._autocomplete_menu.hide()
+            return
+        tags = self.tag_mgr.get_tags()
+        matches = [t['name'] for t in tags if term.lower() in t['name'].lower()][:5]
+        self._autocomplete_menu.clear()
+        for name in matches:
+            self._autocomplete_menu.addAction(name).triggered.connect(
+                lambda _, n=name: self._apply_autocomplete(n))
+        if matches:
+            self._autocomplete_menu.popup(
+                self.search_entry.mapToGlobal(self.search_entry.rect().bottomLeft()))
+        else:
+            self._autocomplete_menu.hide()
+
+    def _apply_autocomplete(self, text: str) -> None:
+        self.search_entry.setText(text)
+        self._autocomplete_menu.hide()
+        self._on_search()
+
+    # ------------------------------------------------------------------
+    # Columns / pagination
+    # ------------------------------------------------------------------
+
+    def _set_columns(self, val: int) -> None:
+        self.columns = val
+        self.load_gallery()
+
+    def _prev_page(self) -> None:
         if self.current_page > 1:
             self.current_page -= 1
             self.load_gallery()
 
-    def _next_page(self):
-        if hasattr(self, 'has_next_page') and self.has_next_page:
-            self.current_page += 1
-            self.load_gallery()
-
-    def _setup_masonry_columns(self):
-        # Clear existing columns
-        for col_frame in self.masonry_columns:
-            col_frame.destroy()
-        self.masonry_columns.clear()
-        self.masonry_heights = []
-
-        # Set weight
-        for i in range(6):
-            self.main_area.grid_columnconfigure(i, weight=0)
-
-        for i in range(self.columns):
-            self.main_area.grid_columnconfigure(i, weight=1)
-            col_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
-            col_frame.grid(row=0, column=i, sticky="nw", padx=5)
-            self.masonry_columns.append(col_frame)
-            self.masonry_heights.append(0)
-
-    def _on_columns_changed(self, value):
-        new_cols = int(value)
-        if new_cols != self.columns:
-            self.columns = new_cols
-            self.load_gallery()
-
-    def _show_upload(self):
-        if self.show_upload_callback:
-            self.show_upload_callback()
-
-    # ------------------------------------------------------------------ filters
-
-    def _on_search(self, event=None):
-        self.current_search_term = self.search_entry.get().strip() or None
-        self.current_page = 1
-        self.load_gallery()
-        
-    def reset_filters(self):
-        self.current_collection_id = None
-        self.current_tag_id = None
-        self.current_search_term = None
-        self.only_favorites = False
-        self.current_page = 1
-        self.search_entry.delete(0, 'end')
+    def _next_page(self) -> None:
+        self.current_page += 1
         self.load_gallery()
 
-    def set_favorites_filter(self):
-        self.only_favorites = True
-        self.current_collection_id = None
-        self.current_tag_id = None
-        self.current_page = 1
-        self.load_gallery()
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
 
-    def set_collection(self, collection_id):
-        self.current_collection_id = collection_id
-        self.current_tag_id = None
-        self.only_favorites = False
-        self.current_page = 1
-        self.load_gallery()
-        
-    def set_tag(self, tag_id):
-        self.current_tag_id = tag_id
-        self.current_collection_id = None
-        self.only_favorites = False
-        self.current_page = 1
-        self.load_gallery()
+    def _render_images(self, images: list) -> None:
+        row, col = 0, 0
+        for data in images:
+            path = data['file_path']
+            self.path_to_id[path] = data['id']
 
-    # ------------------------------------------------------------------ settings / dialogs
+            card = ImageCard()
+            card.set_selected(path in self.selected_images)
 
-    def _open_settings(self):
-        if not hasattr(self, "_settings_win") or not self._settings_win.winfo_exists():
-            self._settings_win = SettingsDialog(self)
+            pixmap: QPixmap | None = data.get('qpixmap')
+            if pixmap:
+                card.setPixmap(pixmap.scaled(
+                    200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+            card.clicked.connect(lambda p=path, c=card: self._toggle_selection(p, c))
+            card.right_clicked.connect(lambda pos, p=path: self._show_context_menu(pos, p))
+
+            self._cards[path] = card
+            self.gallery_grid.addWidget(card, row, col)
+            col += 1
+            if col >= self.columns:
+                col, row = 0, row + 1
+
+        self.page_label.setText(f"Page {self.current_page}")
+        self._refresh_bulk_tag_button()
+
+    # ------------------------------------------------------------------
+    # Selection
+    # ------------------------------------------------------------------
+
+    def _toggle_selection(self, path: str, card: ImageCard) -> None:
+        if path in self.selected_images:
+            self.selected_images.discard(path)
         else:
-            self._settings_win.focus()
-        
-    def _create_collection(self):
-        dialog = ctk.CTkInputDialog(text="Enter collection name:", title="New Collection")
-        name = dialog.get_input()
-        if name:
-            if self.collection_mgr.create_collection(name):
-                self.refresh_collections_list()
-                
-    def _create_tag(self):
-        dialog = ctk.CTkInputDialog(text="Enter tag name:", title="New Tag")
-        name = dialog.get_input()
-        if name:
-            if self.tag_mgr.create_tag(name):
-                self.refresh_tags_list()
+            self.selected_images.add(path)
+        card.set_selected(path in self.selected_images)
+        self._refresh_bulk_tag_button()
 
-    # ------------------------------------------------------------------ sidebar lists
+    def _refresh_bulk_tag_button(self) -> None:
+        n = len(self.selected_images)
+        self.bulk_tag_btn.setEnabled(bool(n))
+        self.bulk_tag_btn.setText(f"🏷 Retag ({n})" if n else "🏷 Retag Selected")
 
-    def refresh_collections_list(self):
-        for widget in self.collections_scroll.winfo_children():
-            widget.destroy()
-            
-        collections = self.collection_mgr.get_collections()
-        for c in collections:
-            cid, cname = c['id'], c['name']
-            display_name = cname if len(cname) <= 20 else cname[:17] + "..."
-            btn = ctk.CTkButton(
-                self.collections_scroll, text=display_name,
-                fg_color="transparent", anchor="w",
-                font=ctk.CTkFont(family="Segoe UI", size=12),
-                command=lambda id=cid: self.set_collection(id)
-            )
-            btn.bind("<Button-3>", lambda e, id=cid: self._delete_collection_prompt(e, id))
-            btn.pack(pady=2, fill="x")
-            
-    def _delete_collection_prompt(self, event, col_id):
-        menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="Delete Collection", command=lambda: self._execute_col_delete(col_id))
-        menu.tk_popup(event.x_root, event.y_root)
-        
-    def _execute_col_delete(self, col_id):
-        self.collection_mgr.delete_collection(col_id)
-        if self.current_collection_id == col_id:
-            self.set_collection(None)
-        self.refresh_collections_list()
-            
-    def refresh_tags_list(self):
-        for widget in self.tags_scroll.winfo_children():
-            widget.destroy()
-            
-        tags = self.tag_mgr.get_tags()
-        for t in tags:
-            tid, tname = t['id'], t['name']
-            display_name = tname if len(tname) <= 20 else tname[:17] + "..."
-            btn = ctk.CTkButton(
-                self.tags_scroll, text=display_name,
-                fg_color="transparent", anchor="w",
-                font=ctk.CTkFont(family="Segoe UI", size=12),
-                command=lambda id=tid: self.set_tag(id)
-            )
-            btn.bind("<Button-3>", lambda e, id=tid: self._delete_tag_prompt(e, id))
-            btn.pack(pady=2, fill="x")
-            
-    def _delete_tag_prompt(self, event, tag_id):
-        menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="Delete Tag", command=lambda: self._execute_tag_delete(tag_id))
-        menu.tk_popup(event.x_root, event.y_root)
-        
-    def _execute_tag_delete(self, tag_id):
-        self.tag_mgr.delete_tag(tag_id)
-        if self.current_tag_id == tag_id:
-            self.set_tag(None)
-        self.refresh_tags_list()
-        self.load_gallery()
+    # ------------------------------------------------------------------
+    # Context menu
+    # ------------------------------------------------------------------
 
-    def _open_workspace(self):
-        self.switch_to_workspace_callback(list(self.selected_images))
+    def _show_context_menu(self, pos: QPoint, file_path: str) -> None:
+        targets = set(self.selected_images) | {file_path}
 
-    # ------------------------------------------------------------------ gallery loading
+        menu = QMenu(self)
 
-    def _clear_gallery(self):
-        """Destroy all thumbnail widgets and force GC to reclaim PIL/Tk image memory."""
-        self._setup_masonry_columns()
-        self.selected_images.clear()
-        self.path_to_id.clear()
+        col_menu = menu.addMenu("Add to Collection")
+        for c in self.collection_mgr.get_collections():
+            col_menu.addAction(c['name']).triggered.connect(
+                lambda _, cid=c['id']: self._add_to_collection(targets, cid))
 
-        if hasattr(self, 'empty_state_frame'):
-            self.empty_state_frame.destroy()
-
-        gc.collect()
-
-    def load_gallery(self):
-        self._current_load_id += 1
-        load_id = self._current_load_id
-        
-        self._clear_gallery()
-        
-        offset = (self.current_page - 1) * self.items_per_page
-
-        # Fetch all matching metadata on the main thread (pure SQL, no image I/O — fast)
-        # Fetch items_per_page + 1 to determine if there's a next page
-        images = self.image_mgr.query_images(
-            self.current_collection_id, self.current_tag_id,
-            self.current_search_term, self.only_favorites,
-            limit=self.items_per_page + 1, offset=offset
-        )
-        
-        self.has_next_page = len(images) > self.items_per_page
-        if self.has_next_page:
-            images = images[:self.items_per_page]
-
-        self.prev_page_btn.configure(state="normal" if self.current_page > 1 else "disabled")
-        self.next_page_btn.configure(state="normal" if self.has_next_page else "disabled")
-        self.page_label.configure(text=f"Page {self.current_page}")
-
-        if not images and self.current_page == 1:
-            self._show_empty_state()
-            return
-        elif not images:
-            return
-
-        def _load_image_task(img_data):
-            try:
-                thumb_path = img_data['thumbnail_path']
-                if not Path(thumb_path).exists():
-                    return None
-                img = Image.open(thumb_path)
-                img.load()
-                return (img_data, img)
-            except Exception as e:
-                print(f"Error loading thumbnail: {e}")
-                return None
-
-        def _on_image_loaded(future):
-            result = future.result()
-            if result:
-                self.after(0, self._render_thumbnail, result[0], result[1], load_id)
-
-        # Stream in batches — keeps the UI responsive while images trickle in
-        batch_size = 24
-        def _schedule_batch(start_idx):
-            if load_id != self._current_load_id:
-                return  # Abort if a new load was triggered
-            
-            end_idx = min(start_idx + batch_size, len(images))
-            for i in range(start_idx, end_idx):
-                img_data = images[i]
-                future = self._thread_pool.submit(_load_image_task, img_data)
-                future.add_done_callback(_on_image_loaded)
-            
-            if end_idx < len(images):
-                # Yield to the event loop before firing the next batch
-                self.after(80, _schedule_batch, end_idx)
-
-        _schedule_batch(0)
-
-    def _show_empty_state(self):
-        self.empty_state_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
-        self.empty_state_frame.grid(row=0, column=0, columnspan=self.columns, pady=100)
-
-        icon = ctk.CTkLabel(self.empty_state_frame, text="🖼️", font=ctk.CTkFont(size=64))
-        icon.pack(pady=(0, 10))
-
-        title = ctk.CTkLabel(self.empty_state_frame, text="No images yet", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"))
-        title.pack(pady=(0, 5))
-
-        sub = ctk.CTkLabel(self.empty_state_frame, text="Upload reference images to get started.", text_color="#94A3B8", font=ctk.CTkFont(family="Segoe UI", size=14))
-        sub.pack(pady=(0, 20))
-
-        btn = ctk.CTkButton(self.empty_state_frame, text="Upload your first reference", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), fg_color="#7C3AED", hover_color="#6D28D9", height=40, command=self._show_upload)
-        btn.pack()
-
-    # ------------------------------------------------------------------ rendering
-
-    def _get_shortest_column_index(self):
-        min_height = self.masonry_heights[0]
-        min_idx = 0
-        for i, h in enumerate(self.masonry_heights):
-            if h < min_height:
-                min_height = h
-                min_idx = i
-        return min_idx
-
-    def _render_thumbnail(self, img_data, img, load_id):
-        if load_id != self._current_load_id:
-            return
-            
-        file_path = img_data['file_path']
-
-        # Calculate proportional height based on fixed column width
-        # Assuming a reasonable default width for calculation before full layout
-        target_width = max(200, (self.main_area.winfo_width() // self.columns) - 20)
-        orig_width, orig_height = img.size
-
-        if orig_width > 0:
-            ratio = target_width / orig_width
-            target_height = int(orig_height * ratio)
-        else:
-            target_height = target_width
-
-        target_height = max(100, target_height) # minimum height
-
-        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(target_width, target_height))
-        del img  # Release the PIL pixel buffer — CTkImage already has its own copy
-
-        col_idx = self._get_shortest_column_index()
-        col_frame = self.masonry_columns[col_idx]
-        self.masonry_heights[col_idx] += target_height + 20 # Add card padding padding
-
-        card = ctk.CTkFrame(col_frame, fg_color="#1E293B", corner_radius=10)
-        card.pack(fill="x", pady=10)
-
-        # We need a container for the image to handle overlays easily
-        img_container = ctk.CTkFrame(card, fg_color="transparent", corner_radius=10)
-        img_container.pack(fill="both", expand=True, padx=0, pady=0)
-        
-        lbl = ctk.CTkLabel(img_container, image=ctk_img, text="")
-        lbl.image = ctk_img  # Keep strong Tk reference
-        lbl.pack(fill="both", expand=True)
-
-        # Hover Overlay
-        overlay = ctk.CTkFrame(img_container, fg_color="#000000", corner_radius=10)
-        # We don't pack the overlay initially
-
-        overlay_buttons_frame = ctk.CTkFrame(overlay, fg_color="transparent")
-        overlay_buttons_frame.place(relx=0.5, rely=0.5, anchor="center")
-
-        ws_btn = ctk.CTkButton(overlay_buttons_frame, text="▶ Open in Workspace", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), fg_color="#7C3AED", hover_color="#6D28D9", height=32, command=lambda p=file_path: self.switch_to_workspace_callback([p]))
-        ws_btn.pack(pady=5)
-
-        del_btn = ctk.CTkButton(overlay_buttons_frame, text="🗑 Delete", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), fg_color="#EF4444", hover_color="#DC2626", height=32, command=lambda p=file_path: self._delete_images({p}))
-        del_btn.pack(pady=5)
-
-        # Transparent pixel to handle overlay transparency simulation via standard colors
-        # Since Tkinter transparency is tricky, we use a dark semi-transparent-looking color via stipple or just dark bg
-        # A workaround in CTk is just to set fg_color to a very dark color and rely on the UI
-        # But we must capture enter/leave events correctly.
-
-        def on_enter(e):
-            overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-            # Make overlay background slightly transparent on Windows/Mac if supported, else just solid dark
-            try:
-                overlay.configure(fg_color=("gray20", "gray10"))
-            except:
-                pass
-
-        def on_leave(e):
-            # Check if mouse is actually outside the container
-            x, y = e.x_root, e.y_root
-            x1, y1 = img_container.winfo_rootx(), img_container.winfo_rooty()
-            x2, y2 = x1 + img_container.winfo_width(), y1 + img_container.winfo_height()
-
-            if not (x1 <= x <= x2 and y1 <= y <= y2):
-                overlay.place_forget()
-
-        img_container.bind("<Enter>", on_enter)
-        overlay.bind("<Leave>", on_leave)
-        img_container.bind("<Leave>", on_leave)
-        
-        # Bottom Label
-        filename = Path(file_path).name
-        name_lbl = ctk.CTkLabel(
-            card, text=filename,
-            font=ctk.CTkFont(family="Segoe UI", size=11), text_color="#94A3B8"
-        )
-        name_lbl.pack(pady=(4, 8), padx=10, anchor="w")
-        
-        if img_data['is_favorite']:
-            fav_lbl = ctk.CTkLabel(img_container, text="★", text_color="gold",
-                                   font=ctk.CTkFont(size=24, weight="bold"))
-            fav_lbl.place(relx=0.9, rely=0.05, anchor="ne")
-        
-        self.path_to_id[file_path] = img_data['id']
-        
-        lbl.bind("<Button-1>", lambda e, p=file_path, f=card: self.toggle_selection(p, f))
-        lbl.bind("<Button-3>", lambda e, p=file_path: self.show_context_menu(e, p))
-
-    # ------------------------------------------------------------------ selection / context menu
-
-    def toggle_selection(self, file_path, frame_widget):
-        if file_path in self.selected_images:
-            self.selected_images.remove(file_path)
-            frame_widget.configure(fg_color="#1E293B")
-        else:
-            self.selected_images.add(file_path)
-            frame_widget.configure(fg_color="#7C3AED")
-
-    def show_context_menu(self, event, file_path):
-        target_paths = set(self.selected_images)
-        target_paths.add(file_path)
-            
-        menu = tk.Menu(self, tearoff=0)
-        
-        col_menu = tk.Menu(menu, tearoff=0)
-        collections = self.collection_mgr.get_collections()
-        for c in collections:
-            col_menu.add_command(
-                label=c['name'],
-                command=lambda cid=c['id']: self._add_to_collection(target_paths, cid)
-            )
-            
-        if collections:
-            menu.add_cascade(label="Add to Collection", menu=col_menu)
-        else:
-            menu.add_command(label="No Collections exist", state="disabled")
-            
         if self.current_collection_id:
-            menu.add_command(
-                label="Remove from this Collection",
-                command=lambda: self._remove_from_collection(target_paths)
-            )
-            
-        menu.add_separator()
-        menu.add_command(label="Toggle Favorite", command=lambda: self._toggle_favorites(target_paths))
-        
-        tag_menu = tk.Menu(menu, tearoff=0)
-        untag_menu = tk.Menu(menu, tearoff=0)
-        
-        tags = self.tag_mgr.get_tags()
-        for t in tags:
-            tid = t['id']
-            tag_menu.add_command(
-                label=t['name'],
-                command=lambda tid=tid: self._tag_images(target_paths, tid)
-            )
-            untag_menu.add_command(
-                label=t['name'],
-                command=lambda tid=tid: self._untag_images(target_paths, tid)
-            )
-            
-        if tags:
-            menu.add_cascade(label="Tag Image As...", menu=tag_menu)
-            menu.add_cascade(label="Remove Tag...", menu=untag_menu)
-        else:
-            menu.add_command(label="No Tags exist", state="disabled")
-            
-        menu.add_separator()
-        menu.add_command(
-            label="Delete Permanently",
-            command=lambda: self._delete_images(target_paths)
-        )
-        
-        menu.tk_popup(event.x_root, event.y_root)
+            menu.addAction("Remove from this Collection").triggered.connect(
+                lambda: self._remove_from_collection(targets))
 
-    # ------------------------------------------------------------------ mutations
+        menu.addAction("🏷 Edit Tags").triggered.connect(
+            lambda: self._show_tag_dialog(targets))
+        menu.addAction("★ Toggle Favorite").triggered.connect(
+            lambda: self._toggle_favorites(targets))
+        menu.addSeparator()
+        menu.addAction("▶ Open in Workspace").triggered.connect(
+            lambda: self.switch_to_workspace.emit(list(targets), True))
+        menu.addAction("＋ Add to Workspace").triggered.connect(
+            lambda: self.switch_to_workspace.emit(list(targets), False))
+        menu.addSeparator()
+        menu.addAction("🗑 Delete Image").triggered.connect(
+            lambda: self._delete_images(targets))
 
-    def _add_to_collection(self, paths, cid):
-        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if image_ids:
-            self.collection_mgr.add_images_to_collection(image_ids, cid)
-                
-    def _remove_from_collection(self, paths):
-        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if image_ids:
-            self.collection_mgr.remove_images_from_collection(
-                image_ids, self.current_collection_id
-            )
-        self.load_gallery()
-        
-    def _tag_images(self, paths, tid):
-        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if image_ids:
-            self.tag_mgr.tag_images(image_ids, tid)
-                
-    def _untag_images(self, paths, tid):
-        image_ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if image_ids:
-            self.tag_mgr.remove_tag_from_images(image_ids, tid)
-        if self.current_tag_id == tid:
+        menu.popup(pos)
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def _add_to_collection(self, paths: set, cid: int) -> None:
+        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if ids:
+            self.collection_mgr.add_images_to_collection(ids, cid)
+
+    def _remove_from_collection(self, paths: set) -> None:
+        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if ids and self.current_collection_id:
+            self.collection_mgr.remove_images_from_collection(ids, self.current_collection_id)
             self.load_gallery()
-            
-    def _toggle_favorites(self, paths):
-        self.image_mgr.toggle_favorites(list(paths))
+
+    def _show_tag_dialog(self, paths: set) -> None:
+        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if not ids:
+            return
+
+        single = len(ids) == 1
+        all_tags = self.tag_mgr.get_tags()
+        active_ids = {t['id'] for t in (self.tag_mgr.get_tags_for_image(ids[0]) if single else [])}
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Tags")
+        layout = QVBoxLayout(dialog)
+
+        checkboxes: dict = {}
+        for t in all_tags:
+            cb = QCheckBox(t['name'])
+            cb.setChecked(t['id'] in active_ids)
+            layout.addWidget(cb)
+            checkboxes[t['id']] = cb
+
+        def _save() -> None:
+            selected = [tid for tid, cb in checkboxes.items() if cb.isChecked()]
+            for img_id in ids:
+                if single:
+                    self.tag_mgr.remove_all_tags_from_image(img_id)
+                self.tag_mgr.add_tags_to_image(img_id, selected)
+            dialog.accept()
+
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(_save)
+        layout.addWidget(save_btn)
+        dialog.exec_()
+
+    def _toggle_favorites(self, paths: set) -> None:
+        self.image_mgr.toggle_favorites(paths)
         self.load_gallery()
-        
-    def _delete_images(self, paths):
+
+    def _delete_images(self, paths: set) -> None:
+        if QMessageBox.question(
+            self, "Confirm Delete",
+            f"Permanently delete {len(paths)} image(s) from library?",
+            QMessageBox.Yes | QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
         for p in paths:
             self.image_mgr.delete_image(p)
+        self.selected_images -= paths
+        self._refresh_bulk_tag_button()
         self.load_gallery()
+
+    def _bulk_retag(self) -> None:
+        if self.selected_images:
+            self._show_tag_dialog(self.selected_images)
+
+    def _open_workspace(self) -> None:
+        self.switch_to_workspace.emit(list(self.selected_images), True)
+
+    def _add_to_workspace(self) -> None:
+        if not self.selected_images:
+            QMessageBox.warning(self, "Notice", "Select images first.")
+            return
+        self.switch_to_workspace.emit(list(self.selected_images), False)
+
+    def _open_detached_workspace(self) -> None:
+        self.show_detached_workspace.emit(list(self.selected_images), True)
+
+    def _open_settings(self) -> None:
+        from ui.settings_dialog import SettingsDialog
+        SettingsDialog(self).exec_()
+
+    # ------------------------------------------------------------------
+    # Sidebar list refresh
+    # ------------------------------------------------------------------
+
+    def refresh_collections_list(self) -> None:
+        self.collections_list.clear()
+        tree: dict = {}
+        roots = []
+        for c in self.collection_mgr.get_collections():
+            pid = c.get('parent_id')
+            if pid is None:
+                roots.append(c)
+            else:
+                tree.setdefault(pid, []).append(c)
+
+        def _add_node(node: dict, depth: int) -> None:
+            item = QListWidgetItem("  " * depth + node['name'])
+            item.setData(Qt.UserRole, node['id'])
+            self.collections_list.addItem(item)
+            for child in tree.get(node['id'], []):
+                _add_node(child, depth + 1)
+
+        for r in roots:
+            _add_node(r, 0)
+
+    def _create_collection(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "New Collection", "Name (use / for sub-folders, e.g. People/Portraits):")
+        if not ok or not name:
+            return
+        parts = [p.strip() for p in name.strip('/').split('/') if p.strip()]
+        parent_id = None
+        for part in parts:
+            cols = self.collection_mgr.get_collections()
+            match = next((c for c in cols if c['name'] == part and c.get('parent_id') == parent_id), None)
+            if not match:
+                self.collection_mgr.create_collection(part, parent_id=parent_id)
+                cols = self.collection_mgr.get_collections()
+                match = next((c for c in cols if c['name'] == part and c.get('parent_id') == parent_id), None)
+            if match:
+                parent_id = match['id']
+        self.refresh_collections_list()
+
+    def refresh_smart_collections_list(self) -> None:
+        self.smart_collections_list.clear()
+        for sc in self.collection_mgr.get_smart_collections():
+            item = QListWidgetItem(sc['name'])
+            item.setData(Qt.UserRole, sc['tag_ids'])
+            self.smart_collections_list.addItem(item)
+
+    def _create_smart_collection(self) -> None:
+        name, ok = QInputDialog.getText(self, "New Smart Collection", "Name:")
+        if not ok or not name:
+            return
+        tags_str, ok2 = QInputDialog.getText(
+            self, "New Smart Collection", "Required tags (comma-separated):")
+        if not ok2 or not tags_str:
+            return
+        tag_names = [t.strip().lower() for t in tags_str.split(',') if t.strip()]
+        all_tags = self.tag_mgr.get_tags()
+        tag_ids = [t['id'] for t in all_tags if t['name'].lower() in tag_names]
+        if not tag_ids:
+            QMessageBox.warning(self, "Error", "None of the specified tags exist.")
+            return
+        if self.collection_mgr.create_smart_collection(name, tag_ids):
+            self.refresh_smart_collections_list()
+
+    def refresh_tags_list(self) -> None:
+        self.tags_list.clear()
+        for t in self.tag_mgr.get_tags():
+            item = QListWidgetItem(t['name'])
+            item.setData(Qt.UserRole, t['id'])
+            self.tags_list.addItem(item)
+
+    def _create_tag(self) -> None:
+        name, ok = QInputDialog.getText(self, "New Tag", "Tag name:")
+        if ok and name and self.tag_mgr.create_tag(name):
+            self.refresh_tags_list()

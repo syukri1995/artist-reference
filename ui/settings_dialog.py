@@ -1,130 +1,90 @@
-import customtkinter as ctk
 import webbrowser
-
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QTabWidget, QWidget, 
+                             QLabel, QHBoxLayout, QComboBox, QSlider, QFrame)
+from PyQt5.QtCore import Qt
 try:
     from version import APP_VERSION
 except ImportError:
     APP_VERSION = "Unknown"
 
-class SettingsDialog(ctk.CTkToplevel):
-    def __init__(self, master):
-        super().__init__(master)
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("⚙ Settings & About")
+        self.setFixedSize(450, 400)
         
-        self.title("⚙ Settings & About")
-        self.geometry("450x400")
-        self.resizable(False, False)
+        layout = QVBoxLayout(self)
         
-        # Center the window
-        self.update_idletasks()
-        if master.winfo_ismapped():
-            x = master.winfo_x() + (master.winfo_width() // 2) - (450 // 2)
-            y = master.winfo_y() + (master.winfo_height() // 2) - (400 // 2)
-            self.geometry(f"+{x}+{y}")
-            
-        # Removed self.transient(master) because it causes Z-order/unclickable bugs on Windows 
-        # when a global CustomTkinter theme redraw occurs.        
-        # Setup Tabview
-        self.tabview = ctk.CTkTabview(self, width=410, height=350)
-        self.tabview.pack(padx=20, pady=15, expand=True, fill="both")
+        self.tabview = QTabWidget()
+        layout.addWidget(self.tabview)
         
-        self.tab_settings = self.tabview.add("Settings")
-        self.tab_about = self.tabview.add("About")
+        self.tab_settings = QWidget()
+        self.tab_about = QWidget()
+        
+        self.tabview.addTab(self.tab_settings, "Settings")
+        self.tabview.addTab(self.tab_about, "About")
         
         self._build_settings_tab()
         self._build_about_tab()
-        
-        # Removed self.grab_set() to prevent CustomTkinter thread lock on theme change
 
     def _build_settings_tab(self):
+        layout = QVBoxLayout(self.tab_settings)
+        layout.setAlignment(Qt.AlignTop)
+        
         # Appearance Mode
-        appearance_frame = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
-        appearance_frame.pack(fill="x", padx=10, pady=20)
+        app_layout = QHBoxLayout()
+        app_label = QLabel("Appearance Mode:")
+        app_label.setStyleSheet("font-weight: bold;")
+        app_layout.addWidget(app_label)
         
-        mode_label = ctk.CTkLabel(appearance_frame, text="Appearance Mode:", font=ctk.CTkFont(weight="bold"))
-        mode_label.pack(side="left", padx=10)
-        
-        def safe_change_mode(mode):
-            # 250ms delay allows the Dropdown to completely destroy its invisible modal capture 
-            # frame before the global redraw happens.
-            self.after(250, lambda: ctk.set_appearance_mode(mode))
-            
-        mode_menu = ctk.CTkOptionMenu(appearance_frame, values=["System", "Dark", "Light"],
-                                      command=safe_change_mode)
-        mode_menu.set(ctk.get_appearance_mode())
-        mode_menu.pack(side="right", padx=10)
+        mode_menu = QComboBox()
+        mode_menu.addItems(["Dark"]) # Hardcoded Dark for now since we set raw CSS
+        app_layout.addWidget(mode_menu)
+        layout.addLayout(app_layout)
         
         # Opacity Slider
-        opacity_frame = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
-        opacity_frame.pack(fill="x", padx=10, pady=(10, 20))
+        op_layout = QHBoxLayout()
+        self.opacity_label = QLabel("Window Opacity: 100%")
+        self.opacity_label.setStyleSheet("font-weight: bold;")
+        op_layout.addWidget(self.opacity_label)
         
-        self.opacity_val_label = ctk.CTkLabel(opacity_frame, text="Window Opacity: 100%", font=ctk.CTkFont(weight="bold"))
-        self.opacity_val_label.pack(side="left", padx=10)
+        opacity_slider = QSlider(Qt.Horizontal)
+        opacity_slider.setRange(20, 100)
+        opacity_slider.setValue(100)
         
-        root_win = self.master.winfo_toplevel()
-        try:
-            current_alpha = float(root_win.attributes("-alpha"))
-        except Exception:
-            current_alpha = 1.0
-            
         def update_opacity(val):
-            val_pct = int(val * 100)
-            self.opacity_val_label.configure(text=f"Window Opacity: {val_pct}%")
-            try:
-                root_win.attributes("-alpha", val)
-                self.attributes("-alpha", val)
-            except Exception:
-                pass
-                
-        opacity_slider = ctk.CTkSlider(opacity_frame, from_=0.2, to=1.0, command=update_opacity)
-        opacity_slider.set(current_alpha)
-        opacity_slider.pack(side="right", padx=10)
-        
-        # Render initial text label gracefully
-        update_opacity(current_alpha)
-        
+            self.opacity_label.setText(f"Window Opacity: {val}%")
+            if self.parent():
+                self.parent().setWindowOpacity(val / 100.0)
+            self.setWindowOpacity(val / 100.0)
+            
+        opacity_slider.valueChanged.connect(update_opacity)
+        op_layout.addWidget(opacity_slider)
+        layout.addLayout(op_layout)
+
     def _build_about_tab(self):
-        self.tab_about.grid_columnconfigure(0, weight=1)
-        self.tab_about.grid_columnconfigure(1, weight=3)
+        layout = QVBoxLayout(self.tab_about)
+        layout.setAlignment(Qt.AlignTop)
         
-        row_idx = 0
-        
-        def add_info_row(title, value, is_link=False, command=None):
-            nonlocal row_idx
+        def add_info(title, value, is_link=False):
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet("font-weight: bold;")
+            layout.addWidget(title_lbl)
             
-            lbl_title = ctk.CTkLabel(self.tab_about, text=title, font=ctk.CTkFont(weight="bold"), anchor="w")
-            lbl_title.grid(row=row_idx, column=0, sticky="nw", padx=10, pady=(15, 5))
-            
+            val_lbl = QLabel(value)
             if is_link:
-                # Use a button or blue text for the link
-                lbl_val = ctk.CTkLabel(self.tab_about, text=value, text_color="#1f6aa5", cursor="hand2", anchor="w", justify="left")
-                lbl_val.bind("<Button-1>", lambda e: command())
-            else:
-                lbl_val = ctk.CTkLabel(self.tab_about, text=value, anchor="w", justify="left")
-                
-            lbl_val.grid(row=row_idx, column=1, sticky="w", padx=10, pady=(15, 5))
+                val_lbl.setStyleSheet("color: #3B82F6; text-decoration: underline;")
+                val_lbl.setCursor(Qt.PointingHandCursor)
+                val_lbl.mousePressEvent = lambda e: webbrowser.open("https://github.com/syukri1995/artist-reference/issues")
+            layout.addWidget(val_lbl)
             
-            # Divider
-            divider = ctk.CTkFrame(self.tab_about, height=1, fg_color=("gray75", "gray30"))
-            divider.grid(row=row_idx+1, column=0, columnspan=2, sticky="ew", padx=10)
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            line.setStyleSheet("background-color: #334155;")
+            layout.addWidget(line)
             
-            row_idx += 2
-            
-        # 1. Software Version
-        add_info_row("Software Version:", APP_VERSION)
-        
-        # 2. License Information
-        license_text = "MIT License (Open Source)\nFree for personal and commercial use."
-        add_info_row("License Information:", license_text)
-        
-        # 3. System Requirements
-        sys_req = "OS: Windows 10/11, macOS, Linux\nRAM: Minimum 4GB\nDisplay: 1280x720 Minimum"
-        add_info_row("System Requirements:", sys_req)
-        
-        # 4. Contact Support
-        def open_support():
-            support_url = "https://github.com/syukri1995/artist-reference/issues"
-            # Security check: validate URL scheme
-            if support_url.startswith(("http://", "https://")):
-                webbrowser.open(support_url)
-            
-        add_info_row("Contact Support:", "Report an Issue / Request Feature", is_link=True, command=open_support)
+        add_info("Software Version:", APP_VERSION)
+        add_info("License Information:", "MIT License (Open Source)\nFree for personal and commercial use.")
+        add_info("System Requirements:", "OS: Windows 10/11, macOS, Linux\nRAM: Minimum 4GB\nDisplay: 1280x720 Minimum")
+        add_info("Contact Support:", "Report an Issue / Request Feature", is_link=True)

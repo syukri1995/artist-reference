@@ -99,28 +99,43 @@ class ImageManager:
             print(f"Duplicate check error: {e}")
             return None
             
-    def query_images(self, collection_id=None, tag_id=None, search_term=None, only_favorites=False, limit=None, offset=None):
+    def query_images(self, collection_id=None, tag_ids=None, search_term=None, only_favorites=False, only_recent=False, limit=None, offset=None):
         """Query images detached from DB references to avoid cross-thread issues."""
         conn = get_connection()
         cursor = conn.cursor()
         
-        query = "SELECT DISTINCT i.id, i.file_path, i.thumbnail_path, i.width, i.height, i.is_favorite FROM images i"
+        query = "SELECT DISTINCT i.id, i.file_path, i.thumbnail_path, i.width, i.height, i.is_favorite, i.last_viewed, i.date_added FROM images i"
         joins = []
         conditions = []
         params = []
         
         if only_favorites:
             conditions.append("i.is_favorite = 1")
+            
+        if only_recent:
+            conditions.append("i.last_viewed IS NOT NULL")
         
         if collection_id is not None:
             joins.append("JOIN collection_images ci ON i.id = ci.image_id")
             conditions.append("ci.collection_id = ?")
             params.append(collection_id)
             
-        if tag_id is not None:
-            joins.append("JOIN image_tags it ON i.id = it.image_id")
-            conditions.append("it.tag_id = ?")
-            params.append(tag_id)
+        if tag_ids:
+            if isinstance(tag_ids, int):
+                tag_ids = [tag_ids]
+            
+            # Using GROUP BY to enforce AND logic for all tags
+            qmarks = ",".join(["?"] * len(tag_ids))
+            joins.append(f"""
+                JOIN (
+                    SELECT image_id 
+                    FROM image_tags 
+                    WHERE tag_id IN ({qmarks})
+                    GROUP BY image_id 
+                    HAVING COUNT(DISTINCT tag_id) = {len(tag_ids)}
+                ) st ON i.id = st.image_id
+            """)
+            params.extend(tag_ids)
             
         if search_term:
             if "JOIN image_tags it" not in " ".join(joins):
@@ -136,7 +151,11 @@ class ImageManager:
         if conditions:
             final_query += " WHERE " + " AND ".join(conditions)
             
-        final_query += " ORDER BY i.date_added DESC"
+        if only_recent:
+            final_query += " ORDER BY i.last_viewed DESC"
+            limit = 20 # fixed limit for recent
+        else:
+            final_query += " ORDER BY i.date_added DESC"
         
         if limit is not None:
             final_query += " LIMIT ?"
@@ -201,3 +220,56 @@ class ImageManager:
         finally:
             if conn:
                 conn.close()
+
+    def check_health(self) -> list[str]:
+        """Scans the DB for images whose file no longer exists on disk."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM images")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        missing_images = []
+        for row in rows:
+            path_str = row['file_path']
+            if not Path(path_str).exists():
+                missing_images.append(path_str)
+                
+        return missing_images
+        
+    def remove_missing_images(self, missing_paths: list[str]):
+        """Removes the given missing paths from the database and scrubs their thumbnails."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        for p in missing_paths:
+            # We already know the file is missing, but maybe we can cleanup the thumbnail
+            cursor.execute("SELECT thumbnail_path FROM images WHERE file_path = ?", (p,))
+            row = cursor.fetchone()
+            if row:
+                thumb_path = Path(row['thumbnail_path'])
+                if thumb_path.exists():
+                    try: os.remove(thumb_path)
+                    except: pass
+            
+            cursor.execute("DELETE FROM images WHERE file_path = ?", (p,))
+            
+        conn.commit()
+        conn.close()
+
+    def mark_as_viewed(self, file_paths: list[str]):
+        """Updates the last_viewed timestamp for the given image paths."""
+        if not file_paths:
+            return
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.executemany(
+                "UPDATE images SET last_viewed = CURRENT_TIMESTAMP WHERE file_path = ?",
+                [(p,) for p in file_paths]
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Failed to mark as viewed: {e}")
+        finally:
+            conn.close()
