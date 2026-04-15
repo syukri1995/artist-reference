@@ -235,6 +235,15 @@ class WorkspaceView(ctk.CTkFrame):
             try:
                 img = Image.open(path)
                 
+                # Optimize memory footprint by converting to RGB (strips alpha/palette data if unused)
+                # and capping maximum resolution to prevent ultra-high res images from hogging RAM.
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                MAX_DIMENSION = 4000
+                if img.width > MAX_DIMENSION or img.height > MAX_DIMENSION:
+                    img.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.Resampling.LANCZOS)
+
                 # Default logic if no saved state
                 x, y, scale = offset_x, offset_y, 1.0
                 flip_h, flip_v = False, False

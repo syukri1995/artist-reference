@@ -91,6 +91,7 @@ class Application(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def show_workspace(self, selected_images=None):
         if self.gallery_view:
+            self.gallery_view._clear_gallery()
             self.gallery_view.grid_forget()
             
         if not self.workspace_view:

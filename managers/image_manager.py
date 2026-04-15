@@ -99,7 +99,7 @@ class ImageManager:
             print(f"Duplicate check error: {e}")
             return None
             
-    def query_images(self, collection_id=None, tag_id=None, search_term=None, only_favorites=False):
+    def query_images(self, collection_id=None, tag_id=None, search_term=None, only_favorites=False, limit=None, offset=None):
         """Query images detached from DB references to avoid cross-thread issues."""
         conn = get_connection()
         cursor = conn.cursor()
@@ -138,6 +138,14 @@ class ImageManager:
             
         final_query += " ORDER BY i.date_added DESC"
         
+        if limit is not None:
+            final_query += " LIMIT ?"
+            params.append(limit)
+
+        if offset is not None:
+            final_query += " OFFSET ?"
+            params.append(offset)
+
         cursor.execute(final_query, tuple(params))
         images = [dict(row) for row in cursor.fetchall()] # Convert sqlite3.Row to dict to detach from DB
         conn.close()
