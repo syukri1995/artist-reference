@@ -174,13 +174,22 @@ class ImageManager:
             return False
 
     def toggle_favorite(self, file_path: str) -> bool:
+        return self.toggle_favorites([file_path])
+
+    def toggle_favorites(self, file_paths: list[str]) -> bool:
+        conn = None
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute("UPDATE images SET is_favorite = NOT is_favorite WHERE file_path = ?", (file_path,))
+            cursor.executemany(
+                "UPDATE images SET is_favorite = NOT is_favorite WHERE file_path = ?",
+                [(p,) for p in file_paths]
+            )
             conn.commit()
-            conn.close()
             return True
         except Exception as e:
-            print(f"Failed to toggle favorite: {e}")
+            print(f"Failed to toggle favorites: {e}")
             return False
+        finally:
+            if conn:
+                conn.close()
