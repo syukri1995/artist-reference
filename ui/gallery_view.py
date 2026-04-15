@@ -424,8 +424,7 @@ class GalleryView(ctk.CTkFrame):
             self.load_gallery()
             
     def _toggle_favorites(self, paths):
-        for p in paths:
-            self.image_mgr.toggle_favorite(p)
+        self.image_mgr.toggle_favorites(list(paths))
         self.load_gallery()
         
     def _delete_images(self, paths):
