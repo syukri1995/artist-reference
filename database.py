@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 def get_base_dir() -> Path:
@@ -15,10 +16,24 @@ def get_db_path() -> Path:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
 
+class PersistentConnection(sqlite3.Connection):
+    def close(self):
+        """No-op to keep the connection alive for thread-local reuse.
+        Rolls back any uncommitted transaction to ensure a clean state for the next use."""
+        try:
+            self.rollback()
+        except sqlite3.ProgrammingError:
+            # Connection might already be closed in some edge cases
+            pass
+
+_local = threading.local()
+
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(get_db_path())
-    conn.row_factory = sqlite3.Row
-    return conn
+    if not hasattr(_local, "connection"):
+        conn = sqlite3.connect(get_db_path(), factory=PersistentConnection)
+        conn.row_factory = sqlite3.Row
+        _local.connection = conn
+    return _local.connection
 
 def init_db():
     conn = get_connection()
