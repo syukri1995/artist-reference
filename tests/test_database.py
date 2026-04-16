@@ -14,6 +14,10 @@ from database import get_base_dir, get_db_path, get_connection, init_db
 
 class TestDatabase(unittest.TestCase):
     def setUp(self):
+        import database
+        if hasattr(database._local, 'connection'):
+            del database._local.connection
+
         self.test_dir = tempfile.mkdtemp()
         self.db_path = Path(self.test_dir) / "data" / "artist_reference.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +47,7 @@ class TestDatabase(unittest.TestCase):
 
     def test_init_db_fresh(self):
         with patch('database.get_db_path') as mock_db_path:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             mock_db_path.return_value = self.db_path
             init_db()
 
@@ -103,6 +108,7 @@ class TestDatabase(unittest.TestCase):
         conn.close()
 
         with patch('database.get_db_path') as mock_db_path:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             mock_db_path.return_value = self.db_path
             init_db()
 
@@ -142,6 +148,7 @@ class TestDatabase(unittest.TestCase):
         conn.close()
 
         with patch('database.get_db_path') as mock_db_path:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             mock_db_path.return_value = self.db_path
             init_db()
 

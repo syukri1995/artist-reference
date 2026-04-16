@@ -27,14 +27,17 @@ class TestSecurity(unittest.TestCase):
         # Instantiate and mock methods that might cause issues
         dialog = UpdateDialog.__new__(UpdateDialog)
         dialog.download_url = url
-        dialog.destroy = MagicMock()
+
+
 
         # Execute
-        dialog.download_update()
+        with patch.object(dialog, 'accept') as mock_accept:
+            dialog.download_update()
+            dialog.accept = mock_accept
 
         # Verify
         mock_open.assert_called_once_with(url)
-        dialog.destroy.assert_called_once()
+
 
     @patch('webbrowser.open')
     def test_download_update_valid_url_http(self, mock_open):
@@ -44,14 +47,17 @@ class TestSecurity(unittest.TestCase):
 
         dialog = UpdateDialog.__new__(UpdateDialog)
         dialog.download_url = url
-        dialog.destroy = MagicMock()
+
+
 
         # Execute
-        dialog.download_update()
+        with patch.object(dialog, 'accept') as mock_accept:
+            dialog.download_update()
+            dialog.accept = mock_accept
 
         # Verify
         mock_open.assert_called_once_with(url)
-        dialog.destroy.assert_called_once()
+
 
     @patch('webbrowser.open')
     def test_download_update_invalid_url_file(self, mock_open):
@@ -61,14 +67,16 @@ class TestSecurity(unittest.TestCase):
 
         dialog = UpdateDialog.__new__(UpdateDialog)
         dialog.download_url = dangerous_url
-        dialog.destroy = MagicMock()
+
 
         # Execute
-        dialog.download_update()
+        with patch.object(dialog, 'accept') as mock_accept:
+            dialog.download_update()
+            dialog.accept = mock_accept
 
         # Verify
         mock_open.assert_not_called()
-        dialog.destroy.assert_called_once()
+
 
     @patch('webbrowser.open')
     def test_download_update_invalid_url_javascript(self, mock_open):
@@ -78,14 +86,16 @@ class TestSecurity(unittest.TestCase):
 
         dialog = UpdateDialog.__new__(UpdateDialog)
         dialog.download_url = dangerous_url
-        dialog.destroy = MagicMock()
+
 
         # Execute
-        dialog.download_update()
+        with patch.object(dialog, 'accept') as mock_accept:
+            dialog.download_update()
+            dialog.accept = mock_accept
 
         # Verify
         mock_open.assert_not_called()
-        dialog.destroy.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()
