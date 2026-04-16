@@ -5,6 +5,27 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+
+def load_local_env() -> None:
+    base_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    env_path = base_dir / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_local_env()
+
 def resource_path(relative_path: str) -> str:
     """Resolve a resource path that works both in dev and when frozen by PyInstaller."""
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))

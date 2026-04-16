@@ -1,4 +1,5 @@
 import sqlite3
+import os
 import sys
 import threading
 from pathlib import Path
@@ -12,7 +13,11 @@ def get_base_dir() -> Path:
 def get_db_path() -> Path:
     # Use a localized database relative to the project directory or executable
     base_dir = get_base_dir()
-    db_path = base_dir / "data" / "artist_reference.db"
+    data_dir = os.environ.get("ARTIST_REF_DATA_DIR")
+    if data_dir:
+        db_path = Path(data_dir) / "artist_reference.db"
+    else:
+        db_path = base_dir / "data" / "artist_reference.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
 
