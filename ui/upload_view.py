@@ -2,8 +2,10 @@ import os
 import hashlib
 from pathlib import Path
 from PIL import Image
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QScrollArea, QCheckBox, QFileDialog)
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QCheckBox, QFileDialog, QProgressBar,
+)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage
 from managers.image_manager import ImageManager
@@ -60,15 +62,19 @@ class ProcessWorker(QThread):
 
 class UploadWorker(QThread):
     finished_upload = pyqtSignal()
-    
+    progress = pyqtSignal(int, int)
+
     def __init__(self, items, image_mgr):
         super().__init__()
         self.items = items
         self.image_mgr = image_mgr
-        
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
     def run(self):
         from managers.collection_manager import CollectionManager
-        from database import get_connection
         col_mgr = CollectionManager()
         
         col_cache = {}
@@ -98,21 +104,19 @@ class UploadWorker(QThread):
                     col_cache[current_path] = parent_id
             return parent_id
         
-        for item in self.items:
+        total = len(self.items)
+        for idx, item in enumerate(self.items, start=1):
+            if self._cancelled:
+                break
+            self.progress.emit(idx, total)
             self.image_mgr.import_image(str(item['path']))
-            
-            if item['collection']:
+
+            if item['collection'] and item.get('hash'):
                 col_id = get_or_create_collection(item['collection'])
                 if col_id:
-                    try:
-                        conn = get_connection()
-                        c = conn.cursor()
-                        c.execute("SELECT id FROM images WHERE file_hash = ? ORDER BY id DESC LIMIT 1", (item['hash'],))
-                        row = c.fetchone()
-                        conn.close()
-                        if row:
-                            col_mgr.add_images_to_collection([row['id']], col_id)
-                    except: pass
+                    image_id = self.image_mgr.get_image_id_by_hash(item['hash'])
+                    if image_id:
+                        col_mgr.add_images_to_collection([image_id], col_id)
                     
         self.finished_upload.emit()
 
@@ -155,12 +159,24 @@ class NativeDropZone(QWidget):
         self.files_dropped.emit(paths)
 
 class UploadView(QWidget):
-    def __init__(self, master, cancel_callback, on_upload_success_callback):
+    def __init__(
+        self,
+        master,
+        cancel_callback,
+        on_upload_success_callback,
+        status_callback=None,
+        toast_callback=None,
+        danbooru_callback=None,
+    ):
         super().__init__(master)
-        
+
         self.cancel_callback = cancel_callback
         self.on_upload_success_callback = on_upload_success_callback
+        self._status = status_callback
+        self._toast = toast_callback
+        self._danbooru_callback = danbooru_callback
         self.image_mgr = ImageManager()
+        self._up_worker = None
         
         self.pending_files = [] 
         
@@ -202,6 +218,14 @@ class UploadView(QWidget):
         folder_btn = QPushButton("Import Folder (Recursive)")
         folder_btn.clicked.connect(self._browse_folder)
         btn_layout.addWidget(folder_btn)
+
+        self.danbooru_btn = QPushButton("Import from Danbooru…")
+        self.danbooru_btn.setToolTip("Search Danbooru and download into your library")
+        if self._danbooru_callback:
+            self.danbooru_btn.clicked.connect(self._danbooru_callback)
+        else:
+            self.danbooru_btn.setEnabled(False)
+        btn_layout.addWidget(self.danbooru_btn)
         
         left_layout.addLayout(btn_layout)
         
@@ -233,19 +257,22 @@ class UploadView(QWidget):
         self.upload_anyway_chk = QCheckBox("Upload duplicates anyway")
         self.upload_anyway_chk.stateChanged.connect(self._update_summary)
         right_layout.addWidget(self.upload_anyway_chk)
-        
-        # Action Bar
+
+        self.upload_progress = QProgressBar()
+        self.upload_progress.setVisible(False)
+        right_layout.addWidget(self.upload_progress)
+
         action_bar = QHBoxLayout()
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self.cancel_callback)
+        self.cancel_btn.clicked.connect(self._on_cancel)
         action_bar.addWidget(self.cancel_btn)
-        
+
         self.upload_btn = QPushButton("Upload 0 images")
         self.upload_btn.setStyleSheet("background-color: #7C3AED;")
         self.upload_btn.setEnabled(False)
         self.upload_btn.clicked.connect(self._do_upload)
         action_bar.addWidget(self.upload_btn)
-        
+
         layout.addLayout(action_bar)
         
     def _browse_files(self):
@@ -307,14 +334,24 @@ class UploadView(QWidget):
             self.worker.item_processed.connect(self._update_item_ui)
             self.worker.start()
             
+    def _status_border(self, status: str) -> str:
+        colors = {
+            "new": "#10B981",
+            "duplicate": "#F59E0B",
+            "error": "#EF4444",
+            "pending": "#334155",
+        }
+        c = colors.get(status, "#334155")
+        return f"background-color: #334155; border: 2px solid {c}; border-radius: 6px;"
+
     def _render_thumbnail_placeholder(self, item):
         frame = QWidget()
         layout = QVBoxLayout(frame)
-        
-        lbl = QLabel("⏳")
+
+        lbl = QLabel("...")
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setFixedSize(80, 80)
-        lbl.setStyleSheet("background-color: #334155; border-radius: 6px;")
+        lbl.setStyleSheet(self._status_border("pending"))
         layout.addWidget(lbl)
         
         btn = QPushButton("✕")
@@ -333,20 +370,23 @@ class UploadView(QWidget):
         self.status_layout.addWidget(lbl)
         
     def _update_item_ui(self, item):
+        item['thumb_lbl'].setStyleSheet(self._status_border(item.get('status', 'pending')))
         if item['status'] == 'error':
-            item['thumb_lbl'].setText("❌")
-            item['ui_row'].setText(f"❌ Error loading {item['path'].name}")
+            item['thumb_lbl'].setText("X")
+            item['ui_row'].setText(f"Error loading {item['path'].name}")
             item['ui_row'].setStyleSheet("color: #EF4444;")
         else:
             if item.get('qpixmap'):
                 item['thumb_lbl'].setPixmap(item['qpixmap'])
                 item['thumb_lbl'].setText("")
-            
+
             if item['status'] == 'duplicate':
-                item['ui_row'].setText(f"⚠️ Duplicate {item['path'].name} (Matches: {item['duplicate_name']})")
+                item['ui_row'].setText(
+                    f"Duplicate {item['path'].name} (matches: {item['duplicate_name']})"
+                )
                 item['ui_row'].setStyleSheet("color: #F59E0B;")
             elif item['status'] == 'new':
-                item['ui_row'].setText(f"✅ Ready {item['path'].name}")
+                item['ui_row'].setText(f"Ready {item['path'].name}")
                 item['ui_row'].setStyleSheet("color: #10B981;")
                 
         self._update_summary()
@@ -380,20 +420,44 @@ class UploadView(QWidget):
             self.upload_btn.setEnabled(False)
             self.upload_btn.setText("Upload 0 images")
             
+    def _on_cancel(self) -> None:
+        if self._up_worker and self._up_worker.isRunning():
+            self._up_worker.cancel()
+        self.cancel_callback()
+
     def _do_upload(self):
         valid_items = []
         anyway = self.upload_anyway_chk.isChecked()
         for item in self.pending_files:
             if item['status'] == 'new' or (item['status'] == 'duplicate' and anyway):
                 valid_items.append(item)
-                
-        if not valid_items: return
-        
+
+        if not valid_items:
+            return
+
         self.upload_btn.setEnabled(False)
         self.upload_btn.setText("Uploading...")
-        self.cancel_btn.setEnabled(False)
-        
-        self.up_worker = UploadWorker(valid_items, self.image_mgr)
-        self.up_worker.finished_upload.connect(self.on_upload_success_callback)
-        self.up_worker.start()
+        self.cancel_btn.setText("Cancel upload")
+        self.upload_progress.setVisible(True)
+        self.upload_progress.setMaximum(len(valid_items))
+        self.upload_progress.setValue(0)
+
+        self._up_worker = UploadWorker(valid_items, self.image_mgr)
+        self._up_worker.progress.connect(self._on_upload_progress)
+        self._up_worker.finished_upload.connect(self._on_upload_finished)
+        self._up_worker.start()
+
+    def _on_upload_progress(self, current: int, total: int) -> None:
+        self.upload_progress.setMaximum(total)
+        self.upload_progress.setValue(current)
+        if self._status:
+            self._status(f"Uploading {current} of {total}…")
+
+    def _on_upload_finished(self) -> None:
+        self.upload_progress.setVisible(False)
+        self.cancel_btn.setText("Cancel")
+        count = self.upload_progress.maximum()
+        if self._status:
+            self._status(f"Imported {count} image(s)")
+        self.on_upload_success_callback()
 

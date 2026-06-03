@@ -1,7 +1,11 @@
+import json
+import logging
+import re
 import threading
 import urllib.request
-import json
-import re
+
+logger = logging.getLogger(__name__)
+
 
 class UpdateManager:
     def __init__(self, current_version, update_url):
@@ -28,8 +32,7 @@ class UpdateManager:
                         if self._is_newer(latest_version, self.current_version):
                             callback(latest_version, release_notes, download_url)
             except Exception as e:
-                # Silently fail if offline or API rate limited
-                print(f"Update check failed silently: {e}")
+                logger.debug("Update check failed: %s", e)
 
         check_thread = threading.Thread(target=_check, daemon=True)
         check_thread.start()

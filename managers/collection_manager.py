@@ -122,6 +122,32 @@ class CollectionManager:
         conn.close()
         return result
         
+    def get_collection_image_counts(self) -> dict[int, int]:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT collection_id, COUNT(*) AS cnt
+            FROM collection_images
+            GROUP BY collection_id
+        """)
+        counts = {int(row["collection_id"]): int(row["cnt"]) for row in cursor.fetchall()}
+        conn.close()
+        return counts
+
+    def get_collections_for_image(self, image_id: int) -> list[dict]:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.id, c.name
+            FROM collections c
+            JOIN collection_images ci ON ci.collection_id = c.id
+            WHERE ci.image_id = ?
+            ORDER BY c.name
+        """, (image_id,))
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
     def delete_smart_collection(self, sc_id: int) -> bool:
         try:
             conn = get_connection()

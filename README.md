@@ -30,7 +30,7 @@ Built with **Python + PyQt5** and a **SQLite** backend.
   - Delete from library
 
 ### 🖼 Infinite Workspace Canvas
-- Hardware-accelerated **QGraphicsScene / QGraphicsView** canvas — smooth pan and zoom at any scale
+- **QGraphicsScene / QGraphicsView** canvas — smooth pan and zoom (software-rendered)
 - Drag images freely anywhere on the canvas
 - **Scroll wheel** to zoom the canvas; **Ctrl + Scroll** to scale only the selected image
 - **Middle-click or Right-click drag** to pan the canvas
@@ -151,13 +151,13 @@ Schema migrations run automatically on startup via `init_db()` so existing datab
 | Layer | Technology |
 |---|---|
 | UI Framework | PyQt5 |
-| Canvas | `QGraphicsScene` + `QGraphicsView` (OpenGL-backed, hardware-accelerated) |
+| Canvas | `QGraphicsScene` + `QGraphicsView` |
 | Async image loading | `QThread` + `pyqtSignal` / `pyqtSlot` |
 | Image processing | Pillow (PIL) |
 | Storage | SQLite via `sqlite3` (WAL mode, thread-local persistent connections) |
 | Duplicate detection | MD5 file hash computed at import time |
 
-The backend (`managers/`, `database.py`) is fully decoupled from the UI layer. All database access goes through dedicated manager classes, making it straightforward to swap the UI toolkit or add a REST API in the future.
+The backend (`managers/`, `database.py`) centralizes data access. Workspace layouts are keyed by **image ID** (stable) with file paths resolved at load time. UI code lives in `ui/`; a future API layer could wrap the managers without changing storage.
 
 ---
 
@@ -167,7 +167,7 @@ The backend (`managers/`, `database.py`) is fully decoupled from the UI layer. A
 - [ ] Image annotation / sticky notes per image
 - [ ] Colour-grading and filter overlays on the workspace canvas
 - [ ] Export workspace as PDF
-- [ ] Recursive folder import (preserving folder structure as nested collections)
+- [x] Recursive folder import (via Upload screen — preserves folder paths as nested collections)
 - [ ] Plugin system for custom importers
 
 ---

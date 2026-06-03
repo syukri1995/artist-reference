@@ -1,59 +1,37 @@
 """
 workspace_view.py — QGraphicsScene-based infinite canvas for viewing reference images.
-
-Controls:
-  - Left-click drag: move selected image
-  - Right/Middle-click drag: pan the canvas
-  - Scroll wheel: zoom canvas
-  - Ctrl + Scroll: scale selected image(s)
-  - Delete / Backspace: remove selected image(s)
 """
+import logging
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer, QRectF
-from PyQt5.QtGui import QImage, QPainter, QTransform, QWheelEvent, QMouseEvent, QPixmap
+from PyQt5.QtCore import Qt, QTimer, QRectF, pyqtSignal
+from PyQt5.QtGui import QImage, QPainter, QWheelEvent, QMouseEvent
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QGraphicsItem, QGraphicsPixmapItem,
-    QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsScene, QGraphicsView,
+    QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QSlider,
+    QVBoxLayout, QWidget, QShortcut,
 )
+from PyQt5.QtGui import QKeySequence
 from PIL import Image
 
+from app_settings import get_settings
+from managers.image_manager import ImageManager
 from managers.workspace_manager import WorkspaceManager
+from ui.workspace_items import GraphicsPixmapItem
+from ui.workspace_undo import (
+    AddItemsCommand,
+    MoveItemsCommand,
+    RemoveItemsCommand,
+    TransformItemsCommand,
+    _ItemSnapshot,
+    create_undo_stack,
+    restore_item,
+    snapshot_item,
+)
 from utils_image import pil_to_qpixmap
 
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Graphics item
-# ---------------------------------------------------------------------------
-
-class GraphicsPixmapItem(QGraphicsPixmapItem):
-    """A movable, selectable pixmap item that tracks flip state."""
-
-    def __init__(self, pixmap: QPixmap, path: str) -> None:
-        super().__init__(pixmap)
-        self.setFlags(
-            QGraphicsItem.ItemIsMovable
-            | QGraphicsItem.ItemIsSelectable
-            | QGraphicsItem.ItemSendsGeometryChanges
-        )
-        self.path = path
-        self.flip_h = False
-        self.flip_v = False
-        self.base_scale = 1.0
-
-    def flip(self, horizontal: bool = False, vertical: bool = False) -> None:
-        if horizontal:
-            self.flip_h = not self.flip_h
-        if vertical:
-            self.flip_v = not self.flip_v
-        t = QTransform()
-        t.scale(-1 if self.flip_h else 1, -1 if self.flip_v else 1)
-        self.setTransform(t)
-
-
-# ---------------------------------------------------------------------------
-# Canvas view
-# ---------------------------------------------------------------------------
 
 class ExtendedGraphicsView(QGraphicsView):
     """QGraphicsView with scroll-to-zoom and middle/right-click pan."""
@@ -68,23 +46,29 @@ class ExtendedGraphicsView(QGraphicsView):
         self.setStyleSheet("background-color: #121212; border: none;")
         self._is_panning = False
         self._pan_start_pos = None
+        self._zoom_callback = None
+        self._workspace = None
 
-    # --- zoom -----------------------------------------------------------
+    def set_workspace(self, ws) -> None:
+        self._workspace = ws
+
+    def set_zoom_callback(self, cb) -> None:
+        self._zoom_callback = cb
+
+    def _notify_zoom(self) -> None:
+        if self._zoom_callback:
+            self._zoom_callback(self.transform().m11())
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         if event.modifiers() == Qt.ControlModifier:
-            # Scale selected items instead of panning
             factor = 1.1 if delta > 0 else 0.9
-            for item in self.scene().selectedItems():
-                item.setScale(item.scale() * factor)
-                item.base_scale = item.scale()
+            if self._workspace:
+                self._workspace._apply_scale_selected(factor, uniform=event.modifiers() & Qt.ShiftModifier)
             return
-
         zoom = 1.25 if delta > 0 else 1 / 1.25
         self.scale(zoom, zoom)
-
-    # --- pan ------------------------------------------------------------
+        self._notify_zoom()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() in (Qt.RightButton, Qt.MiddleButton):
@@ -113,42 +97,58 @@ class ExtendedGraphicsView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    # --- keyboard -------------------------------------------------------
-
     def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            for item in self.scene().selectedItems():
-                self.scene().removeItem(item)
+            if self._workspace:
+                self._workspace._delete_selected()
             return
         super().keyPressEvent(event)
 
 
-# ---------------------------------------------------------------------------
-# Workspace view
-# ---------------------------------------------------------------------------
-
 class WorkspaceView(QWidget):
     """Main workspace panel: toolbar + infinite canvas."""
 
-    _AUTOSAVE_INTERVAL_MS = 120_000  # 2 minutes
+    show_in_gallery_request = pyqtSignal(int)
 
-    def __init__(self, master, switch_to_gallery_callback, toggle_topmost_cb, toggle_fullscreen_cb) -> None:
+    _AUTOSAVE_INTERVAL_MS = 120_000
+
+    def __init__(
+        self,
+        master,
+        switch_to_gallery_callback,
+        toggle_topmost_cb,
+        toggle_fullscreen_cb,
+        status_callback=None,
+        toast_callback=None,
+    ) -> None:
         super().__init__(master)
         self.switch_to_gallery_callback = switch_to_gallery_callback
         self.toggle_topmost_cb = toggle_topmost_cb
         self.toggle_fullscreen_cb = toggle_fullscreen_cb
+        self._status = status_callback
+        self._toast = toast_callback
         self.ws_manager = WorkspaceManager()
-        self.current_slot = 1
+        self.image_mgr = ImageManager()
+        self.current_slot = get_settings().get_workspace_slot()
+        self._autosave_enabled = True
+        self._slot_buttons: dict[int, QPushButton] = {}
+        self._drag_starts: dict[int, object] = {}
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(lambda: self._perform_autosave(manual=False))
+
+        self._undo_stack = create_undo_stack(self)
+        self._loading_slot = False
 
         self._setup_ui()
 
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._perform_autosave)
-        self._autosave_timer.start(self._AUTOSAVE_INTERVAL_MS)
+        self.set_autosave_enabled(True)
 
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
+        QShortcut(QKeySequence.Undo, self, self._undo_stack.undo)
+        QShortcut(QKeySequence.Redo, self, self._undo_stack.redo)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -156,9 +156,88 @@ class WorkspaceView(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self._build_toolbar())
 
+        canvas_wrap = QWidget()
+        canvas_layout = QVBoxLayout(canvas_wrap)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
         self.scene = QGraphicsScene()
-        self.view = ExtendedGraphicsView(self.scene)
-        layout.addWidget(self.view)
+        self.scene._workspace = self
+        self.view = ExtendedGraphicsView(self.scene, canvas_wrap)
+        self.view.set_workspace(self)
+        self.view.set_zoom_callback(self._update_hud_zoom)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._show_canvas_context_menu)
+        canvas_layout.addWidget(self.view)
+
+        self._hud = QLabel(canvas_wrap)
+        self._hud.setStyleSheet(
+            "background-color: rgba(15, 23, 42, 180); color: #94A3B8; "
+            "padding: 8px 12px; border-radius: 6px; font-size: 11px;"
+        )
+        self._hud.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._update_hud_text(100)
+        if get_settings().get_show_canvas_hint():
+            self._hud.show()
+        else:
+            self._hud.hide()
+
+        self._empty_hint = QLabel(
+            "Add images from the gallery (double-click or Open Workspace)", canvas_wrap
+        )
+        self._empty_hint.setAlignment(Qt.AlignCenter)
+        self._empty_hint.setStyleSheet("color: #64748B; font-size: 14px; background: transparent;")
+        self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        layout.addWidget(canvas_wrap, stretch=1)
+        QTimer.singleShot(0, self._position_overlays)
+
+    def _schedule_save(self) -> None:
+        if self._loading_slot:
+            return
+        self._save_timer.start()
+
+    def _begin_item_drag(self, item: GraphicsPixmapItem) -> None:
+        self._drag_starts[id(item)] = item.pos()
+
+    def _end_item_drag(self, item: GraphicsPixmapItem) -> None:
+        key = id(item)
+        start = self._drag_starts.pop(key, None)
+        if start is None or start == item.pos():
+            return
+        self._undo_stack.push(
+            MoveItemsCommand(
+                [item],
+                [start],
+                [item.pos()],
+                self._schedule_save,
+            )
+        )
+
+    def _position_overlays(self) -> None:
+        parent = self.view.parentWidget()
+        if not parent:
+            return
+        w, h = parent.width(), parent.height()
+        self._hud.adjustSize()
+        self._hud.move(w - self._hud.width() - 12, h - self._hud.height() - 12)
+        self._empty_hint.setGeometry(0, h // 2 - 20, w, 40)
+        self._update_empty_hint()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_overlays()
+
+    def _update_hud_zoom(self, scale: float) -> None:
+        self._update_hud_text(int(scale * 100))
+
+    def _update_hud_text(self, zoom_pct: int) -> None:
+        hint = ""
+        if get_settings().get_show_canvas_hint():
+            hint = "  |  Right-drag: pan  |  Scroll: zoom  |  Ctrl+Z undo"
+        self._hud.setText(f"Zoom {zoom_pct}%{hint}")
+
+    def _update_empty_hint(self) -> None:
+        has_items = any(isinstance(i, GraphicsPixmapItem) for i in self.scene.items())
+        self._empty_hint.setVisible(not has_items)
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QWidget()
@@ -167,141 +246,472 @@ class WorkspaceView(QWidget):
         tb = QHBoxLayout(toolbar)
         tb.setContentsMargins(16, 4, 16, 4)
 
-        def btn(label: str, slot, style: str = "") -> QPushButton:
+        def sep() -> QFrame:
+            f = QFrame()
+            f.setFrameShape(QFrame.VLine)
+            f.setStyleSheet("color: #334155;")
+            return f
+
+        def btn(label: str, slot, tip: str = "", style: str = "") -> QPushButton:
             b = QPushButton(label)
             b.clicked.connect(slot)
+            if tip:
+                b.setToolTip(tip)
             if style:
                 b.setStyleSheet(style)
             return b
 
-        tb.addWidget(btn("← Gallery",       self.switch_to_gallery_callback))
-        tb.addWidget(btn("Zoom In",          lambda: self.view.scale(1.25, 1.25)))
-        tb.addWidget(btn("Zoom Out",         lambda: self.view.scale(0.8, 0.8)))
-        tb.addWidget(btn("Fit View",         self._fit_view))
-        tb.addWidget(btn("Flip H",           lambda: self._flip_selected(horizontal=True)))
-        tb.addWidget(btn("Flip V",           lambda: self._flip_selected(vertical=True)))
-        tb.addWidget(btn("🎨 Palette",       self._extract_palette))
-        tb.addWidget(btn("💾 Export",        self._export))
-        tb.addWidget(btn("🗑 Clear All",     self._clear_all,
-                         "background-color: #DC2626; border-color: #991B1B;"))
+        tb.addWidget(btn("Gallery", self.switch_to_gallery_callback, "Return to library"))
+        self._undo_btn = btn("Undo", self._undo_stack.undo, "Undo (Ctrl+Z)")
+        self._redo_btn = btn("Redo", self._undo_stack.redo, "Redo (Ctrl+Y)")
+        self._undo_stack.canUndoChanged.connect(self._undo_btn.setEnabled)
+        self._undo_stack.canRedoChanged.connect(self._redo_btn.setEnabled)
+        self._undo_btn.setEnabled(False)
+        self._redo_btn.setEnabled(False)
+        tb.addWidget(self._undo_btn)
+        tb.addWidget(self._redo_btn)
+        tb.addWidget(sep())
+        tb.addWidget(btn("Zoom In", lambda: self._zoom_by(1.25), "Zoom canvas in"))
+        tb.addWidget(btn("Zoom Out", lambda: self._zoom_by(0.8), "Zoom canvas out"))
+        tb.addWidget(btn("Fit", self._fit_view, "Fit all images in view"))
+        tb.addWidget(btn("100%", self._reset_view, "Reset canvas zoom to 100%"))
+        tb.addWidget(btn("Sel", self._zoom_to_selection, "Zoom to selection"))
+        tb.addWidget(sep())
+        tb.addWidget(btn("Flip H", lambda: self._flip_selected(horizontal=True), "Flip selected horizontally"))
+        tb.addWidget(btn("Flip V", lambda: self._flip_selected(vertical=True), "Flip selected vertically"))
+        tb.addWidget(btn("Front", self._bring_forward, "Bring selected forward"))
+        tb.addWidget(btn("Back", self._send_backward, "Send selected backward"))
+        tb.addWidget(sep())
+        tb.addWidget(btn("Palette", self._extract_palette, "Extract dominant colors"))
+        tb.addWidget(btn("Export", self._export, "Export canvas as PNG"))
         tb.addStretch()
 
         self.topmost_cb = QCheckBox("Topmost")
+        self.topmost_cb.setToolTip("Keep window above other apps")
         self.topmost_cb.stateChanged.connect(lambda s: self.toggle_topmost_cb(s == Qt.Checked))
         tb.addWidget(self.topmost_cb)
 
         self.fullscreen_cb = QCheckBox("Fullscreen")
+        self.fullscreen_cb.setToolTip("Toggle fullscreen")
         self.fullscreen_cb.stateChanged.connect(lambda s: self.toggle_fullscreen_cb(s == Qt.Checked))
         tb.addWidget(self.fullscreen_cb)
 
-        # Slot buttons (1-5)
+        tb.addWidget(sep())
+        slot_label = QLabel("Slot:")
+        slot_label.setStyleSheet("color: #94A3B8;")
+        tb.addWidget(slot_label)
         slots_row = QHBoxLayout()
         slots_row.setSpacing(4)
         for i in range(1, 6):
             b = QPushButton(str(i))
-            b.setFixedSize(30, 30)
+            b.setFixedSize(32, 32)
+            b.setToolTip(f"Load workspace layout slot {i}")
             b.clicked.connect(lambda _, slot=i: self._load_slot(slot))
+            self._slot_buttons[i] = b
             slots_row.addWidget(b)
         tb.addLayout(slots_row)
+        self._highlight_slot_button()
 
-        tb.addWidget(btn("Save",  self._perform_autosave))
-
+        tb.addWidget(btn("Save", self.save_now, "Save layout to current slot"))
+        tb.addWidget(sep())
+        tb.addWidget(
+            btn(
+                "Clear All",
+                self._confirm_clear_all,
+                "Remove all images from canvas",
+                "background-color: #DC2626; border-color: #991B1B;",
+            ),
+        )
         return toolbar
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _zoom_by(self, factor: float) -> None:
+        self.view.scale(factor, factor)
+        self.view._notify_zoom()
 
-    def load_images(self, selected_images: list, replace: bool = True) -> None:
-        """Load saved slot state, then append any newly selected images."""
-        self._load_slot(self.current_slot)
+    def _reset_view(self) -> None:
+        self.view.resetTransform()
+        self.view._notify_zoom()
 
-        existing = {item.path for item in self.scene.items() if isinstance(item, GraphicsPixmapItem)}
+    def _zoom_to_selection(self) -> None:
+        items = [i for i in self.scene.selectedItems() if isinstance(i, GraphicsPixmapItem)]
+        if not items:
+            return
+        bounds = items[0].sceneBoundingRect()
+        for item in items[1:]:
+            bounds = bounds.united(item.sceneBoundingRect())
+        if not bounds.isEmpty():
+            self.view.fitInView(bounds, Qt.KeepAspectRatio)
+            self.view._notify_zoom()
+
+    def _highlight_slot_button(self) -> None:
+        for i, b in self._slot_buttons.items():
+            if i == self.current_slot:
+                b.setStyleSheet("background-color: #7C3AED; border-color: #6D28D9;")
+            else:
+                b.setStyleSheet("")
+
+    def set_autosave_enabled(self, enabled: bool) -> None:
+        self._autosave_enabled = enabled
+        if enabled:
+            if not self._autosave_timer.isActive():
+                self._autosave_timer.start(self._AUTOSAVE_INTERVAL_MS)
+        else:
+            self._autosave_timer.stop()
+
+    def save_now(self) -> None:
+        self._perform_autosave(manual=True)
+
+    def _pixmap_items(self) -> list[GraphicsPixmapItem]:
+        return [i for i in self.scene.items() if isinstance(i, GraphicsPixmapItem)]
+
+    @staticmethod
+    def _norm_path(path_str: str) -> str:
+        try:
+            return str(Path(path_str).resolve())
+        except OSError:
+            return str(Path(path_str))
+
+    def _resolve_image_id(self, path_str: str, norm_path: str) -> int | None:
+        for candidate in (path_str, norm_path):
+            image_id = self.image_mgr.get_image_id_by_path(candidate)
+            if image_id is not None:
+                return int(image_id)
+        return None
+
+    def _add_item_from_path(self, path_str: str, x: float, y: float) -> GraphicsPixmapItem | None:
+        try:
+            pixmap = pil_to_qpixmap(Image.open(path_str))
+            item = GraphicsPixmapItem(pixmap, path_str)
+            item.image_id = self.image_mgr.get_image_id_by_path(path_str)
+            item.setPos(x, y)
+            self.scene.addItem(item)
+            return item
+        except Exception as exc:
+            logger.warning("Could not open %s: %s", path_str, exc)
+            return None
+
+    def load_images(self, selected_images: list, replace: bool = True) -> int:
+        paths = [str(p) for p in (selected_images or [])]
+        if replace and not paths:
+            self._load_slot(self.current_slot)
+            self._fit_view()
+            self._update_empty_hint()
+            return 0
+
+        if replace and paths:
+            self._undo_stack.clear()
+            self.scene.clear()
+
+        existing_paths: set[str] = set()
+        existing_ids: set[int] = set()
+        for item in self._pixmap_items():
+            existing_paths.add(self._norm_path(item.path))
+            if item.image_id:
+                existing_ids.add(int(item.image_id))
+
         x, y = 50, 50
-        for path in selected_images:
-            path_str = str(path)
-            if path_str in existing:
+        new_snaps: list[_ItemSnapshot] = []
+        seen_paths: set[str] = set()
+        seen_ids: set[int] = set()
+        for path_str in paths:
+            norm = self._norm_path(path_str)
+            if norm in existing_paths or norm in seen_paths:
                 continue
-            try:
-                pixmap = pil_to_qpixmap(Image.open(path_str))
-                item = GraphicsPixmapItem(pixmap, path_str)
-                item.setPos(x, y)
-                self.scene.addItem(item)
-                x += 20
-                y += 20
-            except Exception as exc:
-                print(f"WorkspaceView: could not open {path}: {exc}")
+            image_id = self._resolve_image_id(path_str, norm)
+            if image_id is not None and (image_id in existing_ids or image_id in seen_ids):
+                continue
+            new_snaps.append(_ItemSnapshot.from_path(path_str, x, y, image_id=image_id))
+            seen_paths.add(norm)
+            existing_paths.add(norm)
+            if image_id is not None:
+                seen_ids.add(image_id)
+                existing_ids.add(image_id)
+            x += 20
+            y += 20
 
-    # ------------------------------------------------------------------
-    # Slot management
-    # ------------------------------------------------------------------
+        # QUndoStack.push() calls redo() — do not add items to the scene before this.
+        if new_snaps:
+            self._undo_stack.push(AddItemsCommand(self, new_snaps))
+        if new_snaps or (replace and paths):
+            self._fit_view()
+        self._update_empty_hint()
+        return len(new_snaps)
+
+    def append_paths_to_slot(self, slot_id: int, paths: list) -> int:
+        """Merge images into a workspace slot on disk (skip duplicates)."""
+        paths = [str(p) for p in (paths or []) if p]
+        if not paths:
+            return 0
+
+        state = dict(self.ws_manager.load_state(slot_id) or {})
+        existing_paths: set[str] = set()
+        existing_ids: set[int] = set()
+        max_z = 0
+        anchor_x, anchor_y = 50.0, 50.0
+
+        for image_id, s in state.items():
+            path = s.get("file_path") or self.image_mgr.get_file_path_by_id(image_id)
+            if path:
+                existing_paths.add(self._norm_path(path))
+            existing_ids.add(int(image_id))
+            max_z = max(max_z, int(s.get("z_order", 0)))
+            anchor_x = max(anchor_x, float(s.get("x", 50)) + 20)
+            anchor_y = max(anchor_y, float(s.get("y", 50)) + 20)
+
+        added = 0
+        x, y = anchor_x, anchor_y
+        seen_paths: set[str] = set()
+        seen_ids: set[int] = set()
+
+        for path_str in paths:
+            if not Path(path_str).exists():
+                continue
+            norm = self._norm_path(path_str)
+            if norm in existing_paths or norm in seen_paths:
+                continue
+            image_id = self._resolve_image_id(path_str, norm)
+            if image_id is None:
+                continue
+            if image_id in existing_ids or image_id in seen_ids:
+                continue
+
+            max_z += 1
+            state[image_id] = {
+                "file_path": path_str,
+                "x": x,
+                "y": y,
+                "scale": 1.0,
+                "z_order": max_z,
+                "flip_h": False,
+                "flip_v": False,
+                "opacity": 1.0,
+            }
+            seen_paths.add(norm)
+            existing_paths.add(norm)
+            seen_ids.add(image_id)
+            existing_ids.add(image_id)
+            added += 1
+            x += 20
+            y += 20
+
+        if added:
+            state_list = []
+            for iid, s in state.items():
+                entry = dict(s)
+                entry["image_id"] = int(iid)
+                state_list.append(entry)
+            self.ws_manager.save_state(state_list, slot_id)
+        return added
 
     def _load_slot(self, slot_id: int) -> None:
+        self._loading_slot = True
+        self._undo_stack.clear()
         self.current_slot = slot_id
+        get_settings().set_workspace_slot(slot_id)
+        self._highlight_slot_button()
         state = self.ws_manager.load_state(slot_id)
-        self._clear_all()
+        self.scene.clear()
 
-        for path, s in (state or {}).items():
+        for image_id, s in (state or {}).items():
             try:
-                if not Path(path).exists():
+                path = s.get("file_path") or self.image_mgr.get_file_path_by_id(image_id)
+                if not path or not Path(path).exists():
                     continue
                 pixmap = pil_to_qpixmap(Image.open(path))
                 item = GraphicsPixmapItem(pixmap, path)
-                item.setPos(s['x'], s['y'])
-                item.setScale(s['scale'])
-                item.base_scale = s['scale']
-                item.setZValue(s['z_order'])
-                if s.get('flip_h') or s.get('flip_v'):
-                    item.flip(s.get('flip_h', False), s.get('flip_v', False))
+                item.image_id = image_id
+                item.setPos(s["x"], s["y"])
+                item.setScale(s["scale"])
+                item.base_scale = s["scale"]
+                item.setZValue(s["z_order"])
+                item.setOpacity(float(s.get("opacity", 1.0)))
+                if s.get("flip_h") or s.get("flip_v"):
+                    item.flip(s.get("flip_h", False), s.get("flip_v", False))
                 self.scene.addItem(item)
             except Exception as exc:
-                print(f"WorkspaceView: could not restore {path}: {exc}")
+                logger.warning("Could not restore image_id %s: %s", image_id, exc)
+        self._loading_slot = False
+        self._update_empty_hint()
 
-        self._fit_view()
-
-    def _perform_autosave(self) -> None:
-        state = [
-            {
+    def _perform_autosave(self, manual: bool = False) -> None:
+        state = []
+        for item in self._pixmap_items():
+            image_id = item.image_id or self.image_mgr.get_image_id_by_path(item.path)
+            if image_id is None:
+                continue
+            item.image_id = image_id
+            state.append({
+                "image_id": image_id,
                 "file_path": item.path,
                 "x": item.pos().x(),
                 "y": item.pos().y(),
-                "scale": item.base_scale,
+                "scale": item.scale(),
                 "z_order": int(item.zValue()),
                 "flip_h": item.flip_h,
                 "flip_v": item.flip_v,
-            }
-            for item in self.scene.items()
-            if isinstance(item, GraphicsPixmapItem)
-        ]
+                "opacity": item.opacity(),
+            })
         try:
             self.ws_manager.save_state(state, self.current_slot)
+            msg = f"Saved workspace slot {self.current_slot}"
+            if self._status:
+                self._status(msg, 4000)
+            if manual and self._toast:
+                self._toast(msg)
         except Exception as exc:
-            print(f"WorkspaceView: autosave failed: {exc}")
+            logger.error("Autosave failed: %s", exc)
 
-    # ------------------------------------------------------------------
-    # Canvas helpers
-    # ------------------------------------------------------------------
+    def _confirm_clear_all(self) -> None:
+        if QMessageBox.question(
+            self,
+            "Clear workspace",
+            "Remove all images from the workspace canvas?\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        self._clear_all()
 
     def _clear_all(self) -> None:
+        self._undo_stack.clear()
         self.scene.clear()
+        try:
+            self.ws_manager.save_state([], self.current_slot)
+            if self._toast:
+                self._toast(f"Cleared slot {self.current_slot}")
+        except Exception as exc:
+            logger.error("Clear save failed: %s", exc)
+        self._update_empty_hint()
 
     def _fit_view(self) -> None:
         bounds = self.scene.itemsBoundingRect()
         if not bounds.isEmpty():
             self.view.fitInView(bounds, Qt.KeepAspectRatio)
+            self.view._notify_zoom()
+
+    def _selected_pixmap_items(self) -> list[GraphicsPixmapItem]:
+        return [i for i in self.scene.selectedItems() if isinstance(i, GraphicsPixmapItem)]
+
+    def _apply_scale_selected(self, factor: float, uniform: bool = False) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        for item in items:
+            new_scale = item.scale() * factor
+            if uniform and before:
+                base = before[0].scale
+                new_scale = base * factor
+            item.setScale(new_scale)
+            item.base_scale = item.scale()
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Scale"))
+        self._schedule_save()
 
     def _flip_selected(self, horizontal: bool = False, vertical: bool = False) -> None:
-        for item in self.scene.selectedItems():
-            if isinstance(item, GraphicsPixmapItem):
-                item.flip(horizontal, vertical)
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        for item in items:
+            item.flip(horizontal, vertical)
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Flip"))
+        self._schedule_save()
 
-    # ------------------------------------------------------------------
-    # Tools
-    # ------------------------------------------------------------------
+    def _set_opacity_selected(self, opacity: float) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        for item in items:
+            item.setOpacity(opacity)
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Opacity"))
+        self._schedule_save()
+
+    def _bring_forward(self) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        max_z = max((i.zValue() for i in self._pixmap_items()), default=0)
+        for item in items:
+            item.setZValue(max_z + 1)
+            max_z += 1
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Z-order"))
+        self._schedule_save()
+
+    def _send_backward(self) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        min_z = min((i.zValue() for i in self._pixmap_items()), default=0)
+        for item in items:
+            item.setZValue(min_z - 1)
+            min_z -= 1
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Z-order"))
+        self._schedule_save()
+
+    def _toggle_lock_selected(self) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        for item in items:
+            item.set_locked(not item._locked)
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Lock"))
+        self._schedule_save()
+
+    def _delete_selected(self) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        self._undo_stack.push(RemoveItemsCommand(self, items))
+
+    def _show_in_gallery(self) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        item = items[0]
+        image_id = item.image_id or self.image_mgr.get_image_id_by_path(item.path)
+        if image_id:
+            self.show_in_gallery_request.emit(int(image_id))
+
+    def _show_canvas_context_menu(self, pos) -> None:
+        scene_pos = self.view.mapToScene(self.view.mapFromGlobal(self.view.mapToGlobal(pos)))
+        item = self.scene.itemAt(scene_pos, self.view.transform())
+        if isinstance(item, GraphicsPixmapItem) and not item.isSelected():
+            self.scene.clearSelection()
+            item.setSelected(True)
+
+        menu = QMenu(self)
+        menu.addAction("Show in gallery", self._show_in_gallery)
+        menu.addSeparator()
+        menu.addAction("Bring forward", self._bring_forward)
+        menu.addAction("Send backward", self._send_backward)
+        menu.addAction("Toggle lock", self._toggle_lock_selected)
+        menu.addSeparator()
+
+        opacity_menu = menu.addMenu("Opacity")
+        for pct in (100, 75, 50, 25):
+            opacity_menu.addAction(f"{pct}%").triggered.connect(
+                lambda _, v=pct / 100.0: self._set_opacity_selected(v)
+            )
+
+        menu.addSeparator()
+        menu.addAction("Flip horizontal", lambda: self._flip_selected(horizontal=True))
+        menu.addAction("Flip vertical", lambda: self._flip_selected(vertical=True))
+        menu.addAction("Delete", self._delete_selected)
+        menu.exec_(self.view.mapToGlobal(pos))
 
     def _extract_palette(self) -> None:
-        items = self.scene.selectedItems()
-        if not items or not isinstance(items[0], GraphicsPixmapItem):
+        items = self._selected_pixmap_items()
+        if not items:
             return
         try:
             pil_img = Image.open(items[0].path).convert("RGB")
@@ -326,7 +736,7 @@ class WorkspaceView(QWidget):
                 layout.addLayout(row)
             dialog.exec_()
         except Exception as exc:
-            print(f"WorkspaceView: palette extraction failed: {exc}")
+            logger.error("Palette extraction failed: %s", exc)
 
     def _export(self) -> None:
         rect = self.scene.itemsBoundingRect()
@@ -341,3 +751,5 @@ class WorkspaceView(QWidget):
         self.scene.render(painter, target=QRectF(img.rect()), source=rect)
         painter.end()
         img.save(path)
+        if self._toast:
+            self._toast("Workspace exported")

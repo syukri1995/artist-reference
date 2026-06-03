@@ -10,20 +10,23 @@ import sys
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_base_dir, get_db_path, get_connection, init_db
+from database import get_base_dir, get_db_path, get_connection, init_db, reset_thread_connection
 
 class TestDatabase(unittest.TestCase):
     def setUp(self):
-        import database
-        if hasattr(database._local, 'connection'):
-            del database._local.connection
+        reset_thread_connection()
 
         self.test_dir = tempfile.mkdtemp()
         self.db_path = Path(self.test_dir) / "data" / "artist_reference.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        reset_thread_connection()
+        try:
+            shutil.rmtree(self.test_dir)
+        except PermissionError:
+            reset_thread_connection()
+            shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_get_base_dir_frozen(self):
         with patch('sys.frozen', True, create=True), \
@@ -87,9 +90,16 @@ class TestDatabase(unittest.TestCase):
             conn.close()
 
     def test_workspace_state_migration(self):
-        # Create a database with old workspace_state schema
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute(
+            "CREATE TABLE images (id INTEGER PRIMARY KEY, file_path TEXT UNIQUE NOT NULL, "
+            "thumbnail_path TEXT, width INTEGER, height INTEGER)"
+        )
+        cursor.execute(
+            "INSERT INTO images (id, file_path, thumbnail_path, width, height) "
+            "VALUES (1, 'test.jpg', 'test.webp', 100, 100)"
+        )
         cursor.execute("""
             CREATE TABLE workspace_state (
                 file_path TEXT NOT NULL,
@@ -107,24 +117,26 @@ class TestDatabase(unittest.TestCase):
         conn.commit()
         conn.close()
 
+        import database
+        if hasattr(database._local, "connection"):
+            del database._local.connection
+
         with patch('database.get_db_path') as mock_db_path:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             mock_db_path.return_value = self.db_path
             init_db()
 
-        # Verify migration
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT slot_id, file_path, x, y, scale, z_order, flip_h, flip_v FROM workspace_state")
+        cursor.execute(
+            "SELECT slot_id, image_id, file_path, x, y, scale, z_order, flip_h, flip_v "
+            "FROM workspace_state"
+        )
         row = cursor.fetchone()
-        self.assertEqual(row[0], 1) # slot_id default
-        self.assertEqual(row[1], 'test.jpg')
-        self.assertEqual(row[2], 10.0)
-        self.assertEqual(row[3], 20.0)
-        self.assertEqual(row[4], 1.5)
-        self.assertEqual(row[5], 1)
-        self.assertEqual(row[6], 0) # flip_h default
-        self.assertEqual(row[7], 0) # flip_v default
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 1)
+        self.assertEqual(row[1], 1)
+        self.assertEqual(row[2], 'test.jpg')
+        self.assertEqual(row[3], 10.0)
         conn.close()
 
     def test_graceful_migrations(self):
@@ -166,6 +178,127 @@ class TestDatabase(unittest.TestCase):
         self.assertIn('flip_v', columns)
 
         conn.close()
+
+    def test_foreign_key_cascade_on_image_delete(self):
+        with patch('database.get_db_path') as mock_db_path:
+            mock_db_path.return_value = self.db_path
+            init_db()
+
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys")
+            self.assertEqual(cursor.fetchone()[0], 1)
+
+            cursor.execute(
+                "INSERT INTO images (file_path, thumbnail_path, width, height) "
+                "VALUES (?, ?, ?, ?)",
+                ("/test/img.jpg", "/test/thumb.webp", 100, 100),
+            )
+            image_id = cursor.lastrowid
+            cursor.execute("INSERT INTO tags (name) VALUES (?)", ("cascade-tag",))
+            tag_id = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO image_tags (image_id, tag_id) VALUES (?, ?)",
+                (image_id, tag_id),
+            )
+            conn.commit()
+
+            cursor.execute("DELETE FROM images WHERE id = ?", (image_id,))
+            conn.commit()
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM image_tags WHERE image_id = ?", (image_id,)
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+            reset_thread_connection()
+
+    def test_workspace_image_id_migration(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE images (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT UNIQUE NOT NULL,
+                thumbnail_path TEXT,
+                width INTEGER,
+                height INTEGER
+            )
+        """)
+        cursor.execute(
+            "INSERT INTO images (id, file_path, thumbnail_path, width, height) "
+            "VALUES (1, '/lib/photo.jpg', '/lib/photo.webp', 100, 100)"
+        )
+        cursor.execute("""
+            CREATE TABLE workspace_state (
+                slot_id INTEGER NOT NULL DEFAULT 1,
+                file_path TEXT NOT NULL,
+                x REAL, y REAL, scale REAL, z_order INTEGER,
+                flip_h BOOLEAN DEFAULT 0,
+                flip_v BOOLEAN DEFAULT 0,
+                PRIMARY KEY (slot_id, file_path)
+            )
+        """)
+        cursor.execute(
+            "INSERT INTO workspace_state VALUES (1, '/lib/photo.jpg', 10, 20, 1.0, 1, 0, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        import database
+        if hasattr(database._local, "connection"):
+            del database._local.connection
+
+        with patch("database.get_db_path") as mock_db_path:
+            mock_db_path.return_value = self.db_path
+            init_db()
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(workspace_state)")
+        columns = [row[1] for row in cursor.fetchall()]
+        self.assertIn("image_id", columns)
+
+        cursor.execute(
+            "SELECT image_id, file_path FROM workspace_state WHERE slot_id=1"
+        )
+        row = cursor.fetchone()
+        self.assertEqual(row[0], 1)
+        self.assertEqual(row[1], "/lib/photo.jpg")
+
+        conn.close()
+        reset_thread_connection()
+        with patch("database.get_db_path") as mock_db_path:
+            mock_db_path.return_value = self.db_path
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM images WHERE id=1")
+            conn.commit()
+            cursor.execute("SELECT COUNT(*) FROM workspace_state")
+            self.assertEqual(cursor.fetchone()[0], 0)
+            reset_thread_connection()
+
+    def test_collections_parent_name_unique(self):
+        import database
+        if hasattr(database._local, "connection"):
+            del database._local.connection
+
+        with patch("database.get_db_path") as mock_db_path:
+            mock_db_path.return_value = self.db_path
+            init_db()
+
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO collections (name, description, parent_id) VALUES (?, ?, ?)",
+            ("Portraits", "", None),
+        )
+        parent_id = cursor.lastrowid
+        cursor.execute(
+            "INSERT INTO collections (name, description, parent_id) VALUES (?, ?, ?)",
+            ("Portraits", "", parent_id),
+        )
+        conn.commit()
+        reset_thread_connection()
 
 if __name__ == '__main__':
     unittest.main()

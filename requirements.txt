@@ -1,2 +1,4 @@
-PyQt5>=5.15.11
-Pillow>=10.2.0
+PyQt5==5.15.11
+Pillow==10.4.0
+certifi>=2024.2.2
+requests>=2.31.0
