@@ -11,6 +11,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!artist_ref_manager.spec
 *.exe
 *.zip
 *.tar

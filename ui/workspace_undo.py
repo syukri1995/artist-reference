@@ -17,6 +17,7 @@ class _ItemSnapshot:
         self.z = item.zValue()
         self.flip_h = item.flip_h
         self.flip_v = item.flip_v
+        self.grayscale = item.grayscale
         self.opacity = item.opacity()
         self.base_scale = item.base_scale
         self.locked = item._locked
@@ -39,6 +40,7 @@ class _ItemSnapshot:
         snap.z = 0.0
         snap.flip_h = False
         snap.flip_v = False
+        snap.grayscale = False
         snap.opacity = 1.0
         snap.base_scale = 1.0
         snap.locked = False
@@ -65,8 +67,8 @@ def restore_item(scene, snap: _ItemSnapshot) -> GraphicsPixmapItem | None:
     item.setZValue(snap.z)
     item.setOpacity(snap.opacity)
     item.set_locked(snap.locked)
-    if snap.flip_h or snap.flip_v:
-        item.flip(snap.flip_h, snap.flip_v)
+    item.set_flip(snap.flip_h, snap.flip_v)
+    item.set_grayscale(getattr(snap, "grayscale", False))
     scene.addItem(item)
     return item
 
@@ -163,10 +165,8 @@ class TransformItemsCommand(QUndoCommand):
             item.setZValue(snap.z)
             item.setOpacity(snap.opacity)
             item.set_locked(snap.locked)
-            if item.flip_h != snap.flip_h:
-                item.flip(horizontal=True)
-            if item.flip_v != snap.flip_v:
-                item.flip(vertical=True)
+            item.set_flip(snap.flip_h, snap.flip_v)
+            item.set_grayscale(getattr(snap, "grayscale", False))
         self._ws._schedule_save()
 
     def undo(self) -> None:

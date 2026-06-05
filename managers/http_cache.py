@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import os
-import ssl
 import threading
 import time
 from pathlib import Path
@@ -18,15 +17,25 @@ from database import get_base_dir
 
 logger = logging.getLogger(__name__)
 
-try:
-    import requests
-    from requests.adapters import HTTPAdapter
+_HAS_REQUESTS = None
+requests = None  # type: ignore
+HTTPAdapter = None  # type: ignore
 
-    _HAS_REQUESTS = True
-except ImportError:
-    requests = None  # type: ignore
-    HTTPAdapter = None  # type: ignore
-    _HAS_REQUESTS = False
+
+def _ensure_requests() -> bool:
+    global _HAS_REQUESTS, requests, HTTPAdapter
+    if _HAS_REQUESTS is not None:
+        return _HAS_REQUESTS
+    try:
+        import requests as _requests
+        from requests.adapters import HTTPAdapter as _HTTPAdapter
+
+        requests = _requests
+        HTTPAdapter = _HTTPAdapter
+        _HAS_REQUESTS = True
+    except ImportError:
+        _HAS_REQUESTS = False
+    return _HAS_REQUESTS
 
 
 def _cache_dir() -> Path:
@@ -114,7 +123,7 @@ class HttpClient:
                 "off",
             )
         self._verify = verify_ssl
-        self._session = self._build_session() if _HAS_REQUESTS else None
+        self._session = self._build_session() if _ensure_requests() else None
 
     def _build_session(self):
         session = requests.Session()
@@ -152,6 +161,7 @@ class HttpClient:
                         continue
                     resp.raise_for_status()
                     return resp.content
+                import ssl
                 import urllib.request
 
                 ctx = ssl.create_default_context(cafile=certifi.where())

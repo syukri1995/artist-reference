@@ -7,7 +7,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QTimer, QRectF, pyqtSignal
 from PyQt5.QtGui import QImage, QPainter, QWheelEvent, QMouseEvent
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsScene, QGraphicsView,
+    QApplication, QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QSlider,
     QVBoxLayout, QWidget, QShortcut,
 )
@@ -279,6 +279,7 @@ class WorkspaceView(QWidget):
         tb.addWidget(sep())
         tb.addWidget(btn("Flip H", lambda: self._flip_selected(horizontal=True), "Flip selected horizontally"))
         tb.addWidget(btn("Flip V", lambda: self._flip_selected(vertical=True), "Flip selected vertically"))
+        tb.addWidget(btn("Gray", self._toggle_grayscale_selected, "Toggle grayscale on selected image"))
         tb.addWidget(btn("Front", self._bring_forward, "Bring selected forward"))
         tb.addWidget(btn("Back", self._send_backward, "Send selected backward"))
         tb.addWidget(sep())
@@ -485,6 +486,7 @@ class WorkspaceView(QWidget):
                 "flip_h": False,
                 "flip_v": False,
                 "opacity": 1.0,
+                "grayscale": False,
             }
             seen_paths.add(norm)
             existing_paths.add(norm)
@@ -525,8 +527,8 @@ class WorkspaceView(QWidget):
                 item.base_scale = s["scale"]
                 item.setZValue(s["z_order"])
                 item.setOpacity(float(s.get("opacity", 1.0)))
-                if s.get("flip_h") or s.get("flip_v"):
-                    item.flip(s.get("flip_h", False), s.get("flip_v", False))
+                item.set_flip(s.get("flip_h", False), s.get("flip_v", False))
+                item.set_grayscale(s.get("grayscale", False))
                 self.scene.addItem(item)
             except Exception as exc:
                 logger.warning("Could not restore image_id %s: %s", image_id, exc)
@@ -550,6 +552,7 @@ class WorkspaceView(QWidget):
                 "flip_h": item.flip_h,
                 "flip_v": item.flip_v,
                 "opacity": item.opacity(),
+                "grayscale": item.grayscale,
             })
         try:
             self.ws_manager.save_state(state, self.current_slot)
@@ -617,6 +620,17 @@ class WorkspaceView(QWidget):
             item.flip(horizontal, vertical)
         after = [snapshot_item(i) for i in items]
         self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Flip"))
+        self._schedule_save()
+
+    def _toggle_grayscale_selected(self) -> None:
+        items = self._selected_pixmap_items()
+        if not items:
+            return
+        before = [snapshot_item(i) for i in items]
+        for item in items:
+            item.toggle_grayscale()
+        after = [snapshot_item(i) for i in items]
+        self._undo_stack.push(TransformItemsCommand(self, items, before, after, text="Grayscale"))
         self._schedule_save()
 
     def _set_opacity_selected(self, opacity: float) -> None:
@@ -706,8 +720,14 @@ class WorkspaceView(QWidget):
         menu.addSeparator()
         menu.addAction("Flip horizontal", lambda: self._flip_selected(horizontal=True))
         menu.addAction("Flip vertical", lambda: self._flip_selected(vertical=True))
+        menu.addAction("Toggle grayscale", self._toggle_grayscale_selected)
         menu.addAction("Delete", self._delete_selected)
         menu.exec_(self.view.mapToGlobal(pos))
+
+    def _copy_palette_color(self, hex_color: str) -> None:
+        QApplication.clipboard().setText(hex_color.upper())
+        if self._toast:
+            self._toast(f"Copied {hex_color.upper()}")
 
     def _extract_palette(self) -> None:
         items = self._selected_pixmap_items()
@@ -726,14 +746,28 @@ class WorkspaceView(QWidget):
             dialog = QDialog(self)
             dialog.setWindowTitle("Color Palette")
             layout = QVBoxLayout(dialog)
+            hint = QLabel("Click a color to copy its hex code")
+            hint.setStyleSheet("color: #94A3B8; font-size: 12px;")
+            layout.addWidget(hint)
+
             for hex_color in colors:
-                row = QHBoxLayout()
+                row_widget = QWidget()
+                row_widget.setCursor(Qt.PointingHandCursor)
+                row_widget.setToolTip("Click to copy")
+                row = QHBoxLayout(row_widget)
+                row.setContentsMargins(4, 4, 4, 4)
                 swatch = QLabel()
                 swatch.setFixedSize(30, 30)
-                swatch.setStyleSheet(f"background-color: {hex_color}; border-radius: 4px;")
+                swatch.setStyleSheet(
+                    f"background-color: {hex_color}; border: 1px solid #334155; border-radius: 4px;"
+                )
+                hex_label = QLabel(hex_color.upper())
+                hex_label.setStyleSheet("color: #E2E8F0; font-weight: bold;")
                 row.addWidget(swatch)
-                row.addWidget(QLabel(hex_color.upper()))
-                layout.addLayout(row)
+                row.addWidget(hex_label)
+                row.addStretch()
+                row_widget.mousePressEvent = lambda _event, c=hex_color: self._copy_palette_color(c)
+                layout.addWidget(row_widget)
             dialog.exec_()
         except Exception as exc:
             logger.error("Palette extraction failed: %s", exc)

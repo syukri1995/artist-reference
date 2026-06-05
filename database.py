@@ -87,6 +87,18 @@ def _migrate_collections_unique(cursor) -> None:
     """)
 
 
+def _migrate_workspace_grayscale(cursor) -> None:
+    cursor.execute("PRAGMA table_info(workspace_state)")
+    columns = {col[1] for col in cursor.fetchall()}
+    if "grayscale" not in columns:
+        try:
+            cursor.execute(
+                "ALTER TABLE workspace_state ADD COLUMN grayscale BOOLEAN DEFAULT 0"
+            )
+        except Exception:
+            pass
+
+
 def _migrate_workspace_opacity(cursor) -> None:
     cursor.execute("PRAGMA table_info(workspace_state)")
     columns = {col[1] for col in cursor.fetchall()}
@@ -358,6 +370,7 @@ def init_db():
     _migrate_collections_unique(cursor)
     _migrate_workspace_image_id(cursor)
     _migrate_workspace_opacity(cursor)
+    _migrate_workspace_grayscale(cursor)
     _migrate_images_fts(cursor)
 
     # Performance Indexes

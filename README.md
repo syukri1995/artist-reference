@@ -58,19 +58,24 @@ artist-reference/
 ├── database.py               # SQLite schema init, auto-migrations, WAL mode
 ├── version.py                # APP_VERSION constant and GitHub Releases URL
 ├── utils_image.py            # PIL → QPixmap conversion helper
+├── artist_ref_manager.spec   # PyInstaller build spec
 ├── requirements.txt
+├── requirements-build.txt    # PyInstaller and build deps
 │
 ├── managers/
 │   ├── image_manager.py      # Import, query, hash, favorites, health check
 │   ├── collection_manager.py # Collections, sub-collections, smart collections
 │   ├── tag_manager.py        # Tag CRUD and per-image tag assignment
 │   ├── workspace_manager.py  # 5-slot workspace state save/load
+│   ├── backup_manager.py     # Zip backup/restore for library data
+│   ├── danbooru_manager.py   # Danbooru API search and import
 │   └── update_manager.py     # GitHub Releases update checker
 │
 └── ui/
     ├── gallery_view.py       # Gallery grid, sidebar, search, context menu
     ├── workspace_view.py     # QGraphicsScene canvas, toolbar, slot controls
     ├── upload_view.py        # Drag-and-drop import screen with async QThread processing
+    ├── danbooru_view.py      # Danbooru search and import UI
     ├── settings_dialog.py    # Settings QDialog
     └── update_dialog.py      # "Update available" QDialog
 ```
@@ -117,14 +122,20 @@ The SQLite database and image thumbnails are stored locally under `data/` in the
 
 ## 📦 Building a Standalone Executable
 
-The project ships with a PyInstaller spec file:
+The project ships with a PyInstaller spec file for a single-file Windows build.
+
+### Local build
 
 ```bash
-pip install pyinstaller
-pyinstaller artist_ref_manager.spec
+pip install -r requirements-build.txt
+pyinstaller --noconfirm artist_ref_manager.spec
 ```
 
-The `.exe` is output to `dist/`. The `data/` folder (database + thumbnails) is created automatically next to the executable on first run.
+The executable is written to `dist/ArtistReferenceManager.exe`. On first run it creates a `data/` folder next to the `.exe` (database, thumbnails, logs).
+
+### Release build (CI)
+
+Pushing a version tag (e.g. `v1.0.0`) triggers [`.github/workflows/build.yml`](.github/workflows/build.yml), which runs tests, builds the Windows executable, and attaches it to a GitHub Release.
 
 ---
 

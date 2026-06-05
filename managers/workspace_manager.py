@@ -30,14 +30,15 @@ class WorkspaceManager:
                     item.get("flip_h", False),
                     item.get("flip_v", False),
                     float(item.get("opacity", 1.0)),
+                    bool(item.get("grayscale", False)),
                 )
                 for image_id, item in by_image_id.items()
             ]
             cursor.executemany(
                 """
                 INSERT OR REPLACE INTO workspace_state
-                  (slot_id, image_id, file_path, x, y, scale, z_order, flip_h, flip_v, opacity)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (slot_id, image_id, file_path, x, y, scale, z_order, flip_h, flip_v, opacity, grayscale)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 data_to_insert,
             )
@@ -58,7 +59,18 @@ class WorkspaceManager:
             cursor.execute("PRAGMA table_info(workspace_state)")
             ws_cols = {col[1] for col in cursor.fetchall()}
             has_opacity = "opacity" in ws_cols
-            if has_opacity:
+            has_grayscale = "grayscale" in ws_cols
+            if has_opacity and has_grayscale:
+                cursor.execute(
+                    """
+                    SELECT image_id, file_path, x, y, scale, z_order, flip_h, flip_v, opacity, grayscale
+                    FROM workspace_state
+                    WHERE slot_id=?
+                    ORDER BY z_order ASC
+                    """,
+                    (slot_id,),
+                )
+            elif has_opacity:
                 cursor.execute(
                     """
                     SELECT image_id, file_path, x, y, scale, z_order, flip_h, flip_v, opacity
@@ -106,6 +118,7 @@ class WorkspaceManager:
                     "flip_h": bool(d.get("flip_h", 0)),
                     "flip_v": bool(d.get("flip_v", 0)),
                     "opacity": float(d.get("opacity", 1.0) or 1.0),
+                    "grayscale": bool(d.get("grayscale", 0)),
                 }
             elif d.get("file_path"):
                 conn2 = get_connection()
@@ -124,6 +137,7 @@ class WorkspaceManager:
                         "flip_h": bool(d.get("flip_h", 0)),
                         "flip_v": bool(d.get("flip_v", 0)),
                         "opacity": float(d.get("opacity", 1.0) or 1.0),
+                        "grayscale": bool(d.get("grayscale", 0)),
                     }
         return state_dict
 
