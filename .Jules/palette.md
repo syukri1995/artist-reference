@@ -1,3 +1,6 @@
 ## 2024-03-22 - Workspace Canvas Placeholder Hints
 **Learning:** Hidden canvas interactions (like Alt+Scrub to scale, Middle-click to pan) are often completely undiscoverable by users without reading external documentation. In an artist reference app, users are staring at the empty canvas immediately upon opening the workspace.
 **Action:** Always utilize empty states not just as placeholders ("Images go here"), but as contextual educational surfaces. A centered, well-formatted list of shortcuts immediately unlocks advanced functionality for the user without requiring them to search for help. Re-show the empty state when all content is cleared to reinforce the learning.
+## 2024-05-18 - Rich UI with HTML in PyQt Labels
+**Learning:** PyQt `QLabel` widgets fully support a subset of HTML for rich text formatting. This is extremely useful for designing informative empty states without having to construct complex nested layout hierarchies or custom widgets. Using HTML `<table>` tags allows for perfect alignment of keyboard shortcut hints.
+**Action:** When creating empty states or informational banners in PyQt, utilize HTML strings within `QLabel` to easily style and align content, rather than writing custom paint events or layout code.

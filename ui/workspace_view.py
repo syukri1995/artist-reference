@@ -217,7 +217,21 @@ class WorkspaceView(QWidget):
             self._hud.hide()
 
         self._empty_hint = QLabel(
-            "Add images from the gallery (double-click or Open Workspace)", canvas_wrap
+            """
+            <div align="center">
+            <h2>Workspace is empty</h2>
+            <p style="color: #94A3B8;">Add images from the gallery (double-click or Open Workspace)</p>
+            <br>
+            <table style="color: #64748B; font-size: 12px; margin: 0 auto; border-spacing: 10px;">
+              <tr><td align="right"><b>Right-drag / Mid-drag</b></td><td>Pan canvas</td></tr>
+              <tr><td align="right"><b>Scroll</b></td><td>Zoom canvas</td></tr>
+              <tr><td align="right"><b>Ctrl+Scroll</b></td><td>Scale selected image</td></tr>
+              <tr><td align="right"><b>Del / Backspace</b></td><td>Remove image</td></tr>
+              <tr><td align="right"><b>Ctrl+Z</b></td><td>Undo</td></tr>
+            </table>
+            </div>
+            """,
+            canvas_wrap
         )
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._empty_hint.setStyleSheet("color: #64748B; font-size: 14px; background: transparent;")
