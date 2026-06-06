@@ -411,6 +411,305 @@ pip install flake8 pylint black isort
 
 ---
 
+## 🔮 Improvement Opportunities & Roadmap
+
+### 🚀 Priority 1: High-Impact Features (Start Here)
+
+#### 1. **Cross-Platform Builds (macOS & Linux)**
+- **Impact:** Expand user base significantly
+- **Effort:** Medium
+- **Status:** Windows-only currently
+- **Action Items:**
+  - Add macOS CI/CD to `.github/workflows/build.yml`
+  - Add Linux CI/CD to `.github/workflows/build.yml`
+  - Test PyQt5 compatibility on both platforms
+  - Provide platform-specific installation instructions in README
+
+#### 2. **Undo/Redo System for Workspace**
+- **Impact:** Prevents user frustration with accidental changes
+- **Effort:** Medium
+- **Status:** Shortcuts mentioned in code but not implemented
+- **Action Items:**
+  - Implement command pattern (`UndoableCommand` base class)
+  - Create undo stack in `WorkspaceView`
+  - Add Ctrl+Z / Ctrl+Y handlers
+  - Track canvas operations: move, scale, flip, delete
+
+#### 3. **Database Query Optimization & Indexing**
+- **Impact:** Improves performance for large libraries
+- **Effort:** Low-Medium
+- **Status:** Complex JOINs in `_build_query_parts()`
+- **Action Items:**
+  - Add indexes on `file_hash`, `is_favorite`, `tag_id`, `collection_id`
+  - Use `EXPLAIN QUERY PLAN` to optimize slow queries
+  - Consider implementing connection pooling in `database.py`
+  - Run performance benchmarks with 1000+ images
+
+#### 4. **Image Annotation & Metadata Support**
+- **Impact:** High user value (already roadmapped)
+- **Effort:** Medium
+- **Status:** Listed in roadmap
+- **Action Items:**
+  - Create `notes` table in database schema
+  - Add note editor UI in workspace
+  - Preserve EXIF data on import
+  - Allow per-image comments/metadata display
+
+#### 5. **Advanced Filtering & Saved Searches**
+- **Impact:** Improves UX for managing large libraries
+- **Effort:** Medium
+- **Status:** Basic tag/collection filtering exists
+- **Action Items:**
+  - Add date range filters (imported after, viewed before, etc.)
+  - Add aspect ratio filters (landscape, portrait, square)
+  - Add file size filters
+  - Implement "saved search" / "smart filter" UI
+  - Persist filter presets in database
+
+---
+
+### 🏗️ Priority 2: Robustness & Error Handling
+
+#### 6. **Error Recovery for Corrupted Images**
+- **Impact:** Prevents app crashes
+- **Effort:** Low
+- **Status:** PIL may hang on corrupted files
+- **Action Items:**
+  - Add try-catch in `_generate_thumbnail()` with timeout
+  - Show placeholder for failed thumbnail loads
+  - Log corrupted file locations for user cleanup
+
+#### 7. **Danbooru Import Error Handling & Retry Logic**
+- **Impact:** Better UX for network failures
+- **Effort:** Medium
+- **Status:** Network failures not well-handled
+- **Action Items:**
+  - Add retry logic with exponential backoff
+  - Implement timeout handling (30s default)
+  - Show clear error messages to user
+  - Queue failed imports for retry
+
+#### 8. **Cross-Thread Safety Improvements**
+- **Impact:** Prevents race conditions
+- **Effort:** Medium
+- **Status:** Auto-save may race with workspace edits
+- **Action Items:**
+  - Add explicit mutex/lock for workspace state saves
+  - Use thread-safe queue for DB operations
+  - Add comprehensive threading tests
+
+---
+
+### ✨ Priority 3: UI/UX Enhancements
+
+#### 9. **Keyboard Shortcut Customization**
+- **Impact:** Advanced users can optimize workflow
+- **Effort:** Medium
+- **Status:** Roadmapped
+- **Action Items:**
+  - Create shortcut binding dialog in settings
+  - Store custom bindings in `app_settings.py`
+  - Load bindings at startup
+  - Show current shortcuts in F1 panel
+
+#### 10. **Gallery View Improvements**
+- **Impact:** Better visual feedback and interaction
+- **Effort:** Medium
+- **Status:** Basic grid view exists
+- **Action Items:**
+  - Add image preview on hover (popup with 50% larger thumbnail)
+  - Display image dimensions and file size in grid cell
+  - Add filter pill UI to remove active filters
+  - Implement context menu with bulk operations
+
+#### 11. **Workspace Canvas Enhancements**
+- **Impact:** More powerful reference arrangement
+- **Effort:** Medium-High
+- **Status:** Current features: pan, zoom, flip, color extract
+- **Action Items:**
+  - Add rotation support (90°, 180°, 270° + free rotation)
+  - Implement alignment tools (align left/right/center/top/bottom)
+  - Add distribute tools (horizontal/vertical spacing)
+  - Add measurement/ruler overlay
+  - Add grid overlay with snap-to-grid option
+
+#### 12. **Color Palette Refinements**
+- **Impact:** More useful for artists
+- **Effort:** Low-Medium
+- **Status:** Extracts 6 colors only
+- **Action Items:**
+  - Allow customization of palette size (3–12 colors)
+  - Export as CSS, JSON, or ASE (Adobe Swatch Exchange)
+  - Add gradient extraction for gradients in images
+  - Show color values in multiple formats (hex, RGB, HSL)
+
+#### 13. **Drag-and-Drop Sorting**
+- **Impact:** More flexible organization
+- **Effort:** Medium
+- **Status:** Only manual collection creation
+- **Action Items:**
+  - Enable drag-drop reordering in gallery
+  - Support drag-drop in workspace for z-order
+  - Drag to create new collections
+  - Drag to add multiple images to collection
+
+---
+
+### 🔧 Priority 4: Developer Experience & Testing
+
+#### 14. **Comprehensive Test Suite**
+- **Impact:** Easier to refactor, catch regressions
+- **Effort:** Medium
+- **Status:** No visible test suite yet
+- **Action Items:**
+  - Write unit tests for all managers (80%+ coverage)
+  - Add integration tests for import → database → UI flow
+  - Add UI tests for gallery and workspace views
+  - Mock external APIs (Danbooru) in tests
+
+#### 15. **Better Logging & Diagnostics**
+- **Impact:** Easier debugging for users and developers
+- **Effort:** Low
+- **Status:** Basic logging exists
+- **Action Items:**
+  - Add structured JSON logging option
+  - Add performance profiling hooks
+  - Export debug logs for bug reports
+  - Add user action audit trail
+
+#### 16. **Developer Documentation**
+- **Impact:** Easier for contributors
+- **Effort:** Low
+- **Status:** README exists but lacks dev guide
+- **Action Items:**
+  - Create `CONTRIBUTING.md` with setup instructions
+  - Document how to add new import sources
+  - Create architecture diagrams
+  - Add inline docstrings for complex logic
+
+---
+
+### 📦 Priority 5: Distribution & Deployment
+
+#### 17. **Multi-Platform Package Distribution**
+- **Impact:** Easier discovery and installation
+- **Effort:** Low-Medium
+- **Status:** Manual releases on GitHub
+- **Action Items:**
+  - Publish to **Winget** (Windows Package Manager)
+  - Publish to **Chocolatey** (Windows)
+  - Publish to **brew** (macOS)
+  - Publish to **snap** (Linux)
+  - Consider Microsoft Store for Windows
+
+#### 18. **Delta/Incremental Updates**
+- **Impact:** Faster updates for users
+- **Effort:** Medium-High
+- **Status:** Full re-download required
+- **Action Items:**
+  - Implement binary delta patching
+  - Use `zsync` or similar for efficient updates
+  - Show download progress and ETA
+  - Allow update scheduling
+
+#### 19. **Cloud Sync Integration (Future)**
+- **Impact:** Cross-device reference library
+- **Effort:** High
+- **Status:** Local-only currently
+- **Action Items:**
+  - Add OneDrive sync support
+  - Add Google Drive sync support
+  - Add Dropbox sync support
+  - Implement conflict resolution
+  - Consider end-to-end encryption
+
+---
+
+### 🐛 Priority 6: Bug Prevention & Validation
+
+#### 20. **Input Validation & File Handling**
+- **Impact:** Prevent crashes from bad data
+- **Effort:** Low
+- **Status:** Basic validation exists
+- **Action Items:**
+  - Add file size limit (configurable, default 100 MB)
+  - Reject invalid image formats early
+  - Validate collection/tag names (no special chars)
+  - Sanitize file paths for cross-platform compatibility
+
+#### 21. **Smart Duplicate Handling**
+- **Impact:** Better user experience on re-import
+- **Effort:** Medium
+- **Status:** Currently silently skips duplicates
+- **Action Items:**
+  - Show dialog with duplicate details
+  - Allow user to merge, replace, or keep both
+  - Offer to merge tags/collections from old import
+  - Log duplicate detections for statistics
+
+#### 22. **Memory Leak Prevention**
+- **Impact:** App stays responsive in long sessions
+- **Effort:** Medium
+- **Status:** QPixmap caching may grow unbounded
+- **Action Items:**
+  - Implement LRU cache for loaded thumbnails
+  - Monitor memory usage, cap at 500 MB
+  - Profile memory with `memory_profiler`
+  - Add cleanup on library refresh
+  - Test with 1000+ images for 8+ hours
+
+---
+
+### 🌐 Integration Features (Future Roadmap)
+
+#### 23. **Additional Import Sources**
+- **Effort:** Medium per source
+- **Current:** Danbooru only
+- **Future Candidates:**
+  - Artstation API
+  - Pinterest scraper
+  - DeviantArt API
+  - Twitter/X image search
+  - Local folder watching with auto-import
+
+#### 24. **Export Formats**
+- **Current:** PNG (workspace export)
+- **Future:**
+  - PDF export (with vector layers)
+  - PSD export (compatible with Photoshop)
+  - SVG export for archival
+  - Batch export to folder
+
+#### 25. **Integration with External Tools**
+- **Effort:** Low-Medium
+- **Ideas:**
+  - Discord bot for sharing reference boards
+  - Figma plugin integration
+  - Notion database sync
+  - Jira board integration for team reference management
+
+---
+
+## 📊 Improvement Priority Matrix
+
+```
+            Low Effort                    High Effort
+High Impact │ #20, #21, #22              │ #17, #18, #25
+            │ #6, #7, #15                │ #1, #4, #8, #10, #11
+            │
+Low Impact  │ #16, #13, #14              │ #2, #3, #9, #12, #24, #19
+            │ #23, #5                    │
+```
+
+**Recommended Execution Order:**
+1. Start with Priority 1 features (highest ROI)
+2. Mix in Priority 2 (robustness improves user trust)
+3. Add Priority 3 features (polish and UX)
+4. Tackle Priority 4 (dev experience)
+5. Plan Priority 5+ as stretch goals
+
+---
+
 ## 📖 Resources & References
 
 - **PyQt5 Docs:** https://www.riverbankcomputing.com/static/Docs/PyQt5/
