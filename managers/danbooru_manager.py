@@ -73,14 +73,36 @@ class DanbooruError(Exception):
 class DanbooruManager:
     _shared_http: HttpClient | None = None
 
+    @staticmethod
+    def _login_from_config() -> str:
+        for key in ("DANBOORU_LOGIN", "DANBOORU_USERNAME"):
+            val = os.environ.get(key, "").strip()
+            if val:
+                return val
+        try:
+            from app_settings import get_settings
+
+            return get_settings().get_danbooru_login()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _api_key_from_config() -> str:
+        val = os.environ.get("DANBOORU_API_KEY", "").strip()
+        if val:
+            return val
+        try:
+            from app_settings import get_settings
+
+            return get_settings().get_danbooru_api_key()
+        except Exception:
+            return ""
+
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or os.environ.get("DANBOORU_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self._validate_base_url(self.base_url)
-        self.login = (
-            os.environ.get("DANBOORU_LOGIN", "").strip()
-            or os.environ.get("DANBOORU_USERNAME", "").strip()
-        )
-        self.api_key = os.environ.get("DANBOORU_API_KEY", "").strip()
+        self.login = self._login_from_config()
+        self.api_key = self._api_key_from_config()
         if DanbooruManager._shared_http is None:
             verify = os.environ.get("DANBOORU_SSL_VERIFY", "1").strip().lower() not in (
                 "0",
@@ -472,3 +494,8 @@ class DanbooruManager:
 
     def has_credentials(self) -> bool:
         return bool(self.login and self.api_key)
+
+    def reload_credentials(self) -> None:
+        """Reload login/api_key from env or saved settings (no restart needed)."""
+        self.login = self._login_from_config()
+        self.api_key = self._api_key_from_config()

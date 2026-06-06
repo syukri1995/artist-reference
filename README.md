@@ -126,12 +126,25 @@ The project ships with a PyInstaller spec file for a single-file Windows build.
 
 ### Local build
 
+Requires **Python 3.11** (matches CI). Other versions may build but are unsupported.
+
 ```bash
 pip install -r requirements-build.txt
 pyinstaller --noconfirm artist_ref_manager.spec
 ```
 
+Optional: set `ARTIST_REF_VERSION=1.0.0` before building to bake a custom version into the exe.
+
 The executable is written to `dist/ArtistReferenceManager.exe`. On first run it creates a `data/` folder next to the `.exe` (database, thumbnails, logs).
+
+Verify the build:
+
+```powershell
+./scripts/smoke_test_exe.ps1
+./scripts/package_release.ps1
+```
+
+This produces `dist/ArtistReferenceManager-win64.zip` with the exe, `README.txt`, `LICENSE`, `NOTICES.txt`, and `.env.example`.
 
 ### Release build (CI)
 

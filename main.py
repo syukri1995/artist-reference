@@ -53,6 +53,10 @@ from ui.upload_view import UploadView
 from ui.danbooru_view import DanbooruView
 from ui.update_dialog import UpdateDialog
 
+# Gallery needs room for sidebar + grid; workspace overlay can be tiny.
+_GALLERY_MIN_SIZE = (1000, 640)
+_WORKSPACE_MIN_SIZE = (180, 100)
+
 SHORTCUTS_REFERENCE = [
     ("F1", "Toggle keyboard shortcuts reference panel"),
     ("Double-click (gallery)", "Open image in workspace"),
@@ -65,6 +69,8 @@ SHORTCUTS_REFERENCE = [
     ("Ctrl + Scroll Wheel", "Scale the selected image"),
     ("Right-click drag", "Pan the workspace canvas"),
     ("Middle-click drag", "Pan the workspace canvas"),
+    ("` (backtick)", "Toggle workspace toolbar / open compact menu"),
+    ("Float mode", "Scale references when resizing window (top bar → Float)"),
 ]
 
 
@@ -85,7 +91,7 @@ class Application(QMainWindow):
         super().__init__()
         self.setWindowTitle("Artist Reference Manager")
         apply_window_icon(self)
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(*_GALLERY_MIN_SIZE)
         self.setStyleSheet(build_stylesheet())
 
         self._settings = get_settings()
@@ -230,7 +236,16 @@ class Application(QMainWindow):
         else:
             self.showNormal()
 
+    def _set_gallery_min_size(self) -> None:
+        self.setMinimumSize(*_GALLERY_MIN_SIZE)
+        self.statusBar().show()
+
+    def _set_workspace_min_size(self) -> None:
+        self.setMinimumSize(*_WORKSPACE_MIN_SIZE)
+        self.statusBar().hide()
+
     def show_gallery(self):
+        self._set_gallery_min_size()
         self.gallery_view.load_gallery()
         self.stacked_widget.setCurrentWidget(self.gallery_view)
 
@@ -239,10 +254,12 @@ class Application(QMainWindow):
         self.gallery_view.focus_image(image_id)
 
     def show_upload(self):
+        self._set_gallery_min_size()
         self.upload_view.reset()
         self.stacked_widget.setCurrentWidget(self.upload_view)
 
     def show_danbooru(self):
+        self._set_gallery_min_size()
         self.stacked_widget.setCurrentWidget(self.danbooru_view)
 
     def _on_danbooru_import_done(self) -> None:
@@ -273,6 +290,7 @@ class Application(QMainWindow):
         self.workspace_view._load_slot(self.workspace_view.current_slot)
 
     def show_workspace(self, selected_images=None, replace=True):
+        self._set_workspace_min_size()
         paths = [str(p) for p in (selected_images or [])]
         if paths:
             self.gallery_view.image_mgr.mark_as_viewed(paths)
@@ -322,7 +340,8 @@ class Application(QMainWindow):
         self.detached_win = DetachedWorkspaceWindow(self)
         self.detached_win.setWindowTitle(f"References — Slot {slot}")
         apply_window_icon(self.detached_win)
-        self.detached_win.resize(1000, 700)
+        self.detached_win.setMinimumSize(*_WORKSPACE_MIN_SIZE)
+        self.detached_win.resize(640, 480)
 
         self.detached_ws = WorkspaceView(
             self.detached_win,

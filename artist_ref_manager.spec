@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Artist Reference Manager (Windows one-file build)."""
 
+import os
 import sys
 import certifi
 from pathlib import Path
 
 import PyQt5
+
+# Bake version into the frozen bundle (CI sets ARTIST_REF_VERSION from git tag).
+_build_version = os.environ.get("ARTIST_REF_VERSION", "1.0.0")
+Path("version_baked.py").write_text(
+    f'APP_VERSION = "{_build_version}"\n',
+    encoding="utf-8",
+)
 
 block_cipher = None
 
@@ -110,7 +118,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

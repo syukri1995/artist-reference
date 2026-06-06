@@ -27,8 +27,8 @@ class UpdateManager:
                         
                         latest_version = data.get("tag_name", "").lstrip("vV")
                         release_notes = data.get("body", "No release notes provided.")
-                        download_url = data.get("html_url", "")
-                        
+                        download_url = self._pick_download_url(data)
+
                         if self._is_newer(latest_version, self.current_version):
                             callback(latest_version, release_notes, download_url)
             except Exception as e:
@@ -36,6 +36,30 @@ class UpdateManager:
 
         check_thread = threading.Thread(target=_check, daemon=True)
         check_thread.start()
+
+    @staticmethod
+    def _pick_download_url(release_data: dict) -> str:
+        """Prefer direct .zip/.exe asset URL over the GitHub release page."""
+        preferred_names = (
+            "ArtistReferenceManager-win64.zip",
+            "ArtistReferenceManager.exe",
+        )
+        assets = release_data.get("assets") or []
+        by_name = {a.get("name", ""): a for a in assets if isinstance(a, dict)}
+        for name in preferred_names:
+            asset = by_name.get(name)
+            if asset:
+                url = asset.get("browser_download_url", "")
+                if url.startswith("https://"):
+                    return url
+        for asset in assets:
+            name = asset.get("name", "")
+            url = asset.get("browser_download_url", "")
+            if url.startswith("https://") and (
+                name.endswith(".zip") or name.endswith(".exe")
+            ):
+                return url
+        return release_data.get("html_url", "")
 
     def _is_newer(self, latest, current):
         """Helper to compare semantic versions simply."""

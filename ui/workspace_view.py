@@ -44,6 +44,8 @@ class ExtendedGraphicsView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setStyleSheet("background-color: #121212; border: none;")
+        self.setResizeAnchor(QGraphicsView.NoAnchor)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self._is_panning = False
         self._pan_start_pos = None
         self._zoom_callback = None
@@ -104,6 +106,23 @@ class ExtendedGraphicsView(QGraphicsView):
             return
         super().keyPressEvent(event)
 
+    def resizeEvent(self, event) -> None:
+        old = event.oldSize()
+        new = event.size()
+        if (
+            self._workspace
+            and self._workspace.is_float_mode()
+            and old.isValid()
+            and old.width() > 0
+            and old.height() > 0
+        ):
+            factor = min(new.width() / old.width(), new.height() / old.height())
+            if abs(factor - 1.0) > 0.0001:
+                self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+                self.scale(factor, factor)
+                self._notify_zoom()
+        super().resizeEvent(event)
+
 
 class WorkspaceView(QWidget):
     """Main workspace panel: toolbar + infinite canvas."""
@@ -111,6 +130,7 @@ class WorkspaceView(QWidget):
     show_in_gallery_request = pyqtSignal(int)
 
     _AUTOSAVE_INTERVAL_MS = 120_000
+    _COMPACT_WIDTH = 820
 
     def __init__(
         self,
@@ -149,14 +169,20 @@ class WorkspaceView(QWidget):
 
         QShortcut(QKeySequence.Undo, self, self._undo_stack.undo)
         QShortcut(QKeySequence.Redo, self, self._undo_stack.redo)
+        QShortcut(QKeySequence("`"), self, self._toggle_toolbar)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self._build_toolbar())
+        self._toolbar = self._build_toolbar()
+        layout.addWidget(self._toolbar)
+        self._compact_bar = self._build_compact_bar()
+        layout.addWidget(self._compact_bar)
+        self._compact_bar.hide()
 
         canvas_wrap = QWidget()
+        self._canvas_wrap = canvas_wrap
         canvas_layout = QVBoxLayout(canvas_wrap)
         canvas_layout.setContentsMargins(0, 0, 0, 0)
         self.scene = QGraphicsScene()
@@ -167,6 +193,16 @@ class WorkspaceView(QWidget):
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._show_canvas_context_menu)
         canvas_layout.addWidget(self.view)
+
+        self._toolbar_restore_btn = QPushButton("Show toolbar")
+        self._toolbar_restore_btn.setParent(canvas_wrap)
+        self._toolbar_restore_btn.setToolTip("Show workspace toolbar (`)")
+        self._toolbar_restore_btn.setStyleSheet(
+            "background-color: rgba(30, 41, 59, 220); color: #E2E8F0; "
+            "border: 1px solid #475569; border-radius: 6px; padding: 4px 10px;"
+        )
+        self._toolbar_restore_btn.clicked.connect(lambda: self._set_toolbar_visible(True))
+        self._toolbar_restore_btn.hide()
 
         self._hud = QLabel(canvas_wrap)
         self._hud.setStyleSheet(
@@ -188,7 +224,64 @@ class WorkspaceView(QWidget):
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         layout.addWidget(canvas_wrap, stretch=1)
+        self._set_float_mode(get_settings().get_workspace_float_mode(), persist=False)
+        self._sync_chrome()
         QTimer.singleShot(0, self._position_overlays)
+
+    def is_float_mode(self) -> bool:
+        return get_settings().get_workspace_float_mode()
+
+    def _set_float_mode(self, enabled: bool, *, persist: bool = True) -> None:
+        if persist:
+            get_settings().set_workspace_float_mode(enabled)
+        if hasattr(self, "float_cb"):
+            self.float_cb.blockSignals(True)
+            self.float_cb.setChecked(enabled)
+            self.float_cb.blockSignals(False)
+        if enabled:
+            self.view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        else:
+            self.view.setResizeAnchor(QGraphicsView.NoAnchor)
+        self._sync_chrome()
+        if hasattr(self, "view"):
+            self._update_hud_text(int(self.view.transform().m11() * 100))
+
+    def _on_float_toggled(self, state: int) -> None:
+        self._set_float_mode(state == Qt.Checked)
+
+    def _on_topmost_toggled(self, state: int) -> None:
+        checked = state == Qt.Checked
+        self.toggle_topmost_cb(checked)
+        if checked:
+            self._set_float_mode(True)
+
+    def _sync_chrome(self) -> None:
+        user_hid_full = not get_settings().get_workspace_toolbar_visible()
+        float_on = self.is_float_mode()
+        narrow = self.width() < self._COMPACT_WIDTH
+        use_compact = float_on or narrow or user_hid_full
+
+        self._toolbar.setVisible(not use_compact)
+        if hasattr(self, "_compact_bar"):
+            self._compact_bar.setVisible(use_compact)
+        show_restore = user_hid_full and use_compact and not narrow
+        if hasattr(self, "_toolbar_restore_btn"):
+            self._toolbar_restore_btn.setVisible(show_restore)
+        self._update_compact_slot_label()
+        QTimer.singleShot(0, self._position_overlays)
+
+    def _set_toolbar_visible(self, visible: bool) -> None:
+        get_settings().set_workspace_toolbar_visible(visible)
+        self._sync_chrome()
+
+    def _toggle_toolbar(self) -> None:
+        if self._compact_bar.isVisible():
+            self._show_workspace_menu()
+            return
+        if self._toolbar.isVisible():
+            self._set_toolbar_visible(False)
+        else:
+            self._set_toolbar_visible(True)
 
     def _schedule_save(self) -> None:
         if self._loading_slot:
@@ -217,6 +310,10 @@ class WorkspaceView(QWidget):
         if not parent:
             return
         w, h = parent.width(), parent.height()
+        if self._toolbar_restore_btn.isVisible():
+            self._toolbar_restore_btn.adjustSize()
+            self._toolbar_restore_btn.move(12, 12)
+            self._toolbar_restore_btn.raise_()
         self._hud.adjustSize()
         self._hud.move(w - self._hud.width() - 12, h - self._hud.height() - 12)
         self._empty_hint.setGeometry(0, h // 2 - 20, w, 40)
@@ -224,20 +321,119 @@ class WorkspaceView(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._position_overlays()
+        self._sync_chrome()
 
     def _update_hud_zoom(self, scale: float) -> None:
         self._update_hud_text(int(scale * 100))
 
     def _update_hud_text(self, zoom_pct: int) -> None:
+        if self.is_float_mode():
+            extra = "  |  ` menu" if not self._toolbar.isVisible() else ""
+            self._hud.setText(f"{zoom_pct}%{extra}")
+            return
         hint = ""
         if get_settings().get_show_canvas_hint():
             hint = "  |  Right-drag: pan  |  Scroll: zoom  |  Ctrl+Z undo"
+        if not self._toolbar.isVisible():
+            hint += "  |  ` toolbar"
         self._hud.setText(f"Zoom {zoom_pct}%{hint}")
 
     def _update_empty_hint(self) -> None:
         has_items = any(isinstance(i, GraphicsPixmapItem) for i in self.scene.items())
         self._empty_hint.setVisible(not has_items)
+
+    def _build_compact_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(34)
+        bar.setStyleSheet(
+            "background-color: #1E293B; border-bottom: 1px solid #334155;"
+        )
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(8, 2, 8, 2)
+        row.setSpacing(8)
+
+        menu_btn = QPushButton("\u2630")
+        menu_btn.setFixedSize(30, 28)
+        menu_btn.setToolTip("Workspace menu (`)")
+        menu_btn.clicked.connect(self._show_workspace_menu)
+        row.addWidget(menu_btn)
+
+        self._compact_slot = QLabel()
+        self._compact_slot.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        row.addWidget(self._compact_slot)
+
+        row.addStretch()
+
+        gallery_btn = QPushButton("Gallery")
+        gallery_btn.setToolTip("Return to library")
+        gallery_btn.clicked.connect(self.switch_to_gallery_callback)
+        row.addWidget(gallery_btn)
+        return bar
+
+    def _update_compact_slot_label(self) -> None:
+        if hasattr(self, "_compact_slot"):
+            self._compact_slot.setText(f"Slot {self.current_slot}")
+
+    def _show_workspace_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("Gallery", self.switch_to_gallery_callback)
+        menu.addSeparator()
+
+        float_action = menu.addAction("Float mode (scale with window)")
+        float_action.setCheckable(True)
+        float_action.setChecked(self.is_float_mode())
+        float_action.triggered.connect(lambda checked: self._set_float_mode(checked))
+
+        top_action = menu.addAction("Topmost")
+        top_action.setCheckable(True)
+        top_action.setChecked(self.topmost_cb.isChecked())
+        top_action.triggered.connect(
+            lambda checked: self.topmost_cb.setChecked(checked)
+        )
+
+        fs_action = menu.addAction("Fullscreen")
+        fs_action.setCheckable(True)
+        fs_action.setChecked(self.fullscreen_cb.isChecked())
+        fs_action.triggered.connect(
+            lambda checked: self.fullscreen_cb.setChecked(checked)
+        )
+        menu.addSeparator()
+
+        if self._toolbar.isVisible():
+            menu.addAction("Compact bar", lambda: self._set_toolbar_visible(False))
+        elif self.width() >= self._COMPACT_WIDTH and not self.is_float_mode():
+            menu.addAction("Full toolbar", lambda: self._set_toolbar_visible(True))
+
+        undo_menu = menu.addMenu("Undo / redo")
+        undo_menu.addAction("Undo", self._undo_stack.undo)
+        undo_menu.addAction("Redo", self._undo_stack.redo)
+
+        zoom_menu = menu.addMenu("Zoom")
+        zoom_menu.addAction("Zoom in", lambda: self._zoom_by(1.25))
+        zoom_menu.addAction("Zoom out", lambda: self._zoom_by(0.8))
+        zoom_menu.addAction("Fit all", self._fit_view)
+        zoom_menu.addAction("100%", self._reset_view)
+        zoom_menu.addAction("Zoom to selection", self._zoom_to_selection)
+
+        edit_menu = menu.addMenu("Edit selection")
+        edit_menu.addAction("Flip horizontal", lambda: self._flip_selected(horizontal=True))
+        edit_menu.addAction("Flip vertical", lambda: self._flip_selected(vertical=True))
+        edit_menu.addAction("Toggle grayscale", self._toggle_grayscale_selected)
+        edit_menu.addAction("Bring forward", self._bring_forward)
+        edit_menu.addAction("Send backward", self._send_backward)
+        edit_menu.addAction("Delete", self._delete_selected)
+
+        menu.addAction("Extract palette", self._extract_palette)
+        menu.addAction("Export PNG", self._export)
+        menu.addAction("Save slot", self.save_now)
+        menu.addSeparator()
+
+        slot_menu = menu.addMenu(f"Workspace slot ({self.current_slot})")
+        for i in range(1, 6):
+            slot_menu.addAction(f"Slot {i}", lambda _, s=i: self._load_slot(s))
+
+        menu.addAction("Clear all", self._confirm_clear_all)
+        menu.exec_(self._compact_bar.mapToGlobal(self._compact_bar.rect().bottomLeft()))
 
     def _build_toolbar(self) -> QWidget:
         toolbar = QWidget()
@@ -287,9 +483,16 @@ class WorkspaceView(QWidget):
         tb.addWidget(btn("Export", self._export, "Export canvas as PNG"))
         tb.addStretch()
 
+        self.float_cb = QCheckBox("Float")
+        self.float_cb.setToolTip(
+            "Scale references when resizing the window (ideal for topmost overlay)"
+        )
+        self.float_cb.stateChanged.connect(self._on_float_toggled)
+        tb.addWidget(self.float_cb)
+
         self.topmost_cb = QCheckBox("Topmost")
-        self.topmost_cb.setToolTip("Keep window above other apps")
-        self.topmost_cb.stateChanged.connect(lambda s: self.toggle_topmost_cb(s == Qt.Checked))
+        self.topmost_cb.setToolTip("Keep window above other apps (enables Float mode)")
+        self.topmost_cb.stateChanged.connect(self._on_topmost_toggled)
         tb.addWidget(self.topmost_cb)
 
         self.fullscreen_cb = QCheckBox("Fullscreen")
@@ -323,6 +526,8 @@ class WorkspaceView(QWidget):
                 "background-color: #DC2626; border-color: #991B1B;",
             ),
         )
+        tb.addWidget(sep())
+        tb.addWidget(btn("Hide bar", self._toggle_toolbar, "Hide toolbar (`)"))
         return toolbar
 
     def _zoom_by(self, factor: float) -> None:
@@ -350,6 +555,7 @@ class WorkspaceView(QWidget):
                 b.setStyleSheet("background-color: #7C3AED; border-color: #6D28D9;")
             else:
                 b.setStyleSheet("")
+        self._update_compact_slot_label()
 
     def set_autosave_enabled(self, enabled: bool) -> None:
         self._autosave_enabled = enabled
@@ -705,6 +911,11 @@ class WorkspaceView(QWidget):
 
         menu = QMenu(self)
         menu.addAction("Show in gallery", self._show_in_gallery)
+        menu.addSeparator()
+        toolbar_label = "Compact bar" if self._toolbar.isVisible() else "Full toolbar"
+        menu.addAction(toolbar_label, self._toggle_toolbar)
+        float_label = "Disable float mode" if self.is_float_mode() else "Enable float mode"
+        menu.addAction(float_label, lambda: self._set_float_mode(not self.is_float_mode()))
         menu.addSeparator()
         menu.addAction("Bring forward", self._bring_forward)
         menu.addAction("Send backward", self._send_backward)

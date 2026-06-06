@@ -324,6 +324,26 @@ class DanbooruView(QWidget):
         self._tag_debounce.timeout.connect(self._fetch_tag_suggestions)
         self._setup_ui()
 
+    def refresh_credentials(self) -> None:
+        self._mgr.reload_credentials()
+        self._update_cred_label()
+
+    def _update_cred_label(self) -> None:
+        if self._mgr.has_credentials():
+            self._cred_label.setText(f"Signed in as {self._mgr.login}")
+            self._cred_label.setStyleSheet("color: #10B981; font-size: 11px;")
+        else:
+            self._cred_label.setText("No API key — lower rate limits")
+            self._cred_label.setStyleSheet("color: #94A3B8; font-size: 11px;")
+
+    def _open_danbooru_settings(self) -> None:
+        from ui.settings_dialog import SettingsDialog
+
+        main = self.window()
+        dlg = SettingsDialog(main, initial_tab=SettingsDialog.TAB_DANBOORU)
+        dlg.exec_()
+        self.refresh_credentials()
+
     def _setup_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -336,8 +356,13 @@ class DanbooruView(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: #E2E8F0;")
         top.addWidget(title)
         top.addStretch()
-        cred = "API key set" if self._mgr.has_credentials() else "No API key (lower rate limits)"
-        top.addWidget(QLabel(cred))
+        self._cred_label = QLabel()
+        self._update_cred_label()
+        top.addWidget(self._cred_label)
+        cred_btn = QPushButton("API key…")
+        cred_btn.setToolTip("Open Settings → Danbooru to enter your API key")
+        cred_btn.clicked.connect(self._open_danbooru_settings)
+        top.addWidget(cred_btn)
         root.addLayout(top)
 
         hint = QLabel(

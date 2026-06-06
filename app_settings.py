@@ -40,6 +40,18 @@ class AppSettings:
     def set_show_canvas_hint(self, show: bool) -> None:
         self._s.setValue("workspace/show_canvas_hint", show)
 
+    def get_workspace_toolbar_visible(self) -> bool:
+        return self._s.value("workspace/toolbar_visible", True, type=bool)
+
+    def set_workspace_toolbar_visible(self, visible: bool) -> None:
+        self._s.setValue("workspace/toolbar_visible", bool(visible))
+
+    def get_workspace_float_mode(self) -> bool:
+        return self._s.value("workspace/float_mode", False, type=bool)
+
+    def set_workspace_float_mode(self, enabled: bool) -> None:
+        self._s.setValue("workspace/float_mode", bool(enabled))
+
     def get_geometry(self) -> bytes | None:
         return self._s.value("window/geometry")
 
@@ -77,6 +89,22 @@ class AppSettings:
         recent = [t for t in self.get_danbooru_recent_tags() if t != tag_query]
         recent.insert(0, tag_query)
         self._s.setValue("danbooru/recent_tags", recent[:8])
+
+    def get_danbooru_login(self) -> str:
+        return str(self._s.value("danbooru/login", "")).strip()
+
+    def set_danbooru_login(self, login: str) -> None:
+        self._s.setValue("danbooru/login", login.strip())
+
+    def get_danbooru_api_key(self) -> str:
+        return str(self._s.value("danbooru/api_key", "")).strip()
+
+    def set_danbooru_api_key(self, api_key: str) -> None:
+        self._s.setValue("danbooru/api_key", api_key.strip())
+
+    def clear_danbooru_credentials(self) -> None:
+        self._s.remove("danbooru/login")
+        self._s.remove("danbooru/api_key")
 
     def sync(self) -> None:
         self._s.sync()

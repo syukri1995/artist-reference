@@ -12,6 +12,7 @@ build/
 dist/
 *.spec
 !artist_ref_manager.spec
+version_baked.py
 *.exe
 *.zip
 *.tar

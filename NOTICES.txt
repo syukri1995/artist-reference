@@ -1,0 +1,25 @@
+Artist Reference Manager — Third-Party Notices
+================================================
+
+This application uses the following open-source components:
+
+PyQt5 (GPL v3 / Qt Commercial)
+  https://www.riverbankcomputing.com/software/pyqt/
+  Used under the terms of the GNU General Public License v3.
+
+Pillow (Pillow License — HPND)
+  https://python-pillow.org/
+
+requests (Apache License 2.0)
+  https://requests.readthedocs.io/
+
+certifi (Mozilla Public License 2.0)
+  https://github.com/certifi/python-certifi
+
+Python standard library including sqlite3
+
+For the full license of this application, see LICENSE.
+
+PyQt5 note for distributors: If you redistribute this software, you may
+need to comply with GPL v3 requirements (source offer, license text).
+See https://www.gnu.org/licenses/gpl-3.0.html
