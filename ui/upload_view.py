@@ -126,9 +126,8 @@ class NativeDropZone(QWidget):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
-        self.setStyleSheet("""
-            QWidget { background-color: #1E293B; border: 2px dashed #334155; border-radius: 12px; }
-        """)
+        self.setObjectName("nativeDropZone")
+        self._apply_style(False)
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
         
@@ -146,14 +145,36 @@ class NativeDropZone(QWidget):
         sub.setStyleSheet("color: #94A3B8; border: none; background: transparent;")
         sub.setAlignment(Qt.AlignCenter)
         layout.addWidget(sub)
+
+    def _apply_style(self, is_drag_over: bool):
+        if is_drag_over:
+            bg_color = "#334155"
+            border_color = "#7C3AED"
+        else:
+            bg_color = "#1E293B"
+            border_color = "#334155"
+
+        self.setStyleSheet(f"""
+            QWidget#nativeDropZone {{
+                background-color: {bg_color};
+                border: 2px dashed {border_color};
+                border-radius: 12px;
+            }}
+        """)
         
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
+            self._apply_style(True)
             event.accept()
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._apply_style(False)
+        event.accept()
             
     def dropEvent(self, event):
+        self._apply_style(False)
         urls = event.mimeData().urls()
         paths = [u.toLocalFile() for u in urls]
         self.files_dropped.emit(paths)
