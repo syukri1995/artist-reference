@@ -4,3 +4,6 @@
 ## 2024-05-18 - Rich UI with HTML in PyQt Labels
 **Learning:** PyQt `QLabel` widgets fully support a subset of HTML for rich text formatting. This is extremely useful for designing informative empty states without having to construct complex nested layout hierarchies or custom widgets. Using HTML `<table>` tags allows for perfect alignment of keyboard shortcut hints.
 **Action:** When creating empty states or informational banners in PyQt, utilize HTML strings within `QLabel` to easily style and align content, rather than writing custom paint events or layout code.
+## 2026-06-08 - Added QLineEdit Clear Buttons
+**Learning:** Utilizing native UI component features like `QLineEdit.setClearButtonEnabled(True)` is a quick and robust way to improve form and search accessibility without adding custom logic or breaking layouts.
+**Action:** Always check if a UI framework provides built-in methods for common UX patterns (like clearing inputs) before implementing custom solutions.
