@@ -221,6 +221,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("Username"))
 
         self.danbooru_login_edit = QLineEdit()
+        self.danbooru_login_edit.setClearButtonEnabled(True)
 
         self.danbooru_login_edit.setPlaceholderText("Your Danbooru username")
 
@@ -233,6 +234,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("API key"))
 
         self.danbooru_api_key_edit = QLineEdit()
+        self.danbooru_api_key_edit.setClearButtonEnabled(True)
 
         self.danbooru_api_key_edit.setPlaceholderText("Paste API key from your Danbooru profile")
 
