@@ -246,6 +246,7 @@ class GalleryView(QWidget):
 
         self.search_entry = QLineEdit()
         self.search_entry.setPlaceholderText("Search filenames or tags (FTS)…")
+        self.search_entry.setClearButtonEnabled(True)
         self.search_entry.setFixedWidth(280)
         self.search_entry.returnPressed.connect(self._on_search)
         self.search_entry.textChanged.connect(self._on_search_changed)
