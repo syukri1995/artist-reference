@@ -1,6 +1,14 @@
 Artist Reference Manager — Quick Start
 ======================================
 
+NOTE: ANTIVIRUS FALSE POSITIVES
+-------------------------------
+Because this executable is unsigned and built with PyInstaller, Windows 
+Defender or other antivirus software may flag it as a "false positive" 
+on first run.
+  - Windows SmartScreen: Click "More info" and then "Run anyway".
+  - Antivirus blocks: You may need to add an exclusion for the app.
+
 FIRST RUN
 ---------
 Double-click ArtistReferenceManager.exe.

@@ -105,6 +105,11 @@ python main.py
 
 The SQLite database and image thumbnails are stored locally under `data/` in the project directory, or next to the `.exe` if packaged.
 
+```bash
+EXE
+pip install -r requirements-build.txt
+pyinstaller --noconfirm artist_ref_manager.spec
+```
 ---
 
 ## ⌨ Keyboard Shortcuts
@@ -123,6 +128,15 @@ The SQLite database and image thumbnails are stored locally under `data/` in the
 ## 📦 Building a Standalone Executable
 
 The project ships with a PyInstaller spec file for a single-file Windows build.
+
+### ⚠️ Antivirus Warnings (False Positives)
+
+Because this executable is **unsigned** and built with **PyInstaller**, Windows Defender or other antivirus software may flag it as a "false positive" on first run.
+
+- **Windows SmartScreen:** Click "More info" and then "Run anyway".
+- **Antivirus blocks:** You may need to add an exclusion for the executable or the folder it resides in.
+
+This is a common issue with Python-based executables. For maximum security, you can [build the executable yourself](#local-build) from the source code.
 
 ### Local build
 
