@@ -223,6 +223,7 @@ class SettingsDialog(QDialog):
         self.danbooru_login_edit = QLineEdit()
 
         self.danbooru_login_edit.setPlaceholderText("Your Danbooru username")
+        self.danbooru_login_edit.setClearButtonEnabled(True)
 
         self.danbooru_login_edit.setText(self._settings.get_danbooru_login())
 
@@ -235,6 +236,7 @@ class SettingsDialog(QDialog):
         self.danbooru_api_key_edit = QLineEdit()
 
         self.danbooru_api_key_edit.setPlaceholderText("Paste API key from your Danbooru profile")
+        self.danbooru_api_key_edit.setClearButtonEnabled(True)
 
         self.danbooru_api_key_edit.setEchoMode(QLineEdit.Password)
 
