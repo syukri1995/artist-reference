@@ -401,7 +401,15 @@ class GalleryView(QWidget):
         detail_title = QLabel("Details")
         detail_title.setStyleSheet("font-weight: bold; color: #E2E8F0; font-size: 13px;")
         detail_layout.addWidget(detail_title)
-        self.detail_panel = QLabel("Select an image to view metadata.")
+        self.detail_panel = QLabel(
+            "Select an image to view metadata.<br><br>"
+            "<table style='color: #64748B; font-size: 11px; border-spacing: 4px;'>"
+            "<tr><td align='right'><b>Arrows</b></td><td>Navigate</td></tr>"
+            "<tr><td align='right'><b>Shift+Click</b></td><td>Select range</td></tr>"
+            "<tr><td align='right'><b>Ctrl+Click</b></td><td>Toggle select</td></tr>"
+            "<tr><td align='right'><b>Double-click</b></td><td>Open workspace</td></tr>"
+            "</table>"
+        )
         self.detail_panel.setWordWrap(True)
         self.detail_panel.setAlignment(Qt.AlignTop)
         self.detail_panel.setStyleSheet("color: #94A3B8; font-size: 12px;")
@@ -860,7 +868,15 @@ class GalleryView(QWidget):
     def _update_detail_panel(self, image_id: int) -> None:
         detail = self.image_mgr.get_image_detail(image_id)
         if not detail:
-            self.detail_panel.setText("Image not found.")
+            self.detail_panel.setText(
+                "Image not found.<br><br>"
+                "<table style='color: #64748B; font-size: 11px; border-spacing: 4px;'>"
+                "<tr><td align='right'><b>Arrows</b></td><td>Navigate</td></tr>"
+                "<tr><td align='right'><b>Shift+Click</b></td><td>Select range</td></tr>"
+                "<tr><td align='right'><b>Ctrl+Click</b></td><td>Toggle select</td></tr>"
+                "<tr><td align='right'><b>Double-click</b></td><td>Open workspace</td></tr>"
+                "</table>"
+            )
             return
         tags = self.tag_mgr.get_tags_for_image(image_id)
         tag_text = ", ".join(t["name"] for t in tags) if tags else "—"
