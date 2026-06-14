@@ -2,8 +2,6 @@ import webbrowser
 
 from pathlib import Path
 
-
-
 from PyQt5.QtCore import Qt
 
 from PyQt5.QtWidgets import (
@@ -14,13 +12,9 @@ from PyQt5.QtWidgets import (
 
 )
 
-
-
 from app_settings import get_settings
 
 from database import get_base_dir
-
-
 
 try:
 
@@ -30,13 +24,7 @@ except ImportError:
 
     APP_VERSION = "Unknown"
 
-
-
 DANBOORU_API_HELP_URL = "https://danbooru.donmai.us/profile"
-
-
-
-
 
 class SettingsDialog(QDialog):
 
@@ -45,8 +33,6 @@ class SettingsDialog(QDialog):
     TAB_DANBOORU = 1
 
     TAB_ABOUT = 2
-
-
 
     def __init__(self, parent=None, initial_tab: int = 0):
 
@@ -58,15 +44,11 @@ class SettingsDialog(QDialog):
 
         self.setFixedSize(480, 520)
 
-
-
         layout = QVBoxLayout(self)
 
         self.tabview = QTabWidget()
 
         layout.addWidget(self.tabview)
-
-
 
         self.tab_settings = QWidget()
 
@@ -80,8 +62,6 @@ class SettingsDialog(QDialog):
 
         self.tabview.addTab(self.tab_about, "About")
 
-
-
         self._build_settings_tab()
 
         self._build_danbooru_tab()
@@ -90,15 +70,11 @@ class SettingsDialog(QDialog):
 
         self.tabview.setCurrentIndex(max(0, min(initial_tab, self.tabview.count() - 1)))
 
-
-
     def _build_settings_tab(self):
 
         layout = QVBoxLayout(self.tab_settings)
 
         layout.setAlignment(Qt.AlignTop)
-
-
 
         op_layout = QHBoxLayout()
 
@@ -107,8 +83,6 @@ class SettingsDialog(QDialog):
         self.opacity_label.setStyleSheet("font-weight: bold; color: #E2E8F0;")
 
         op_layout.addWidget(self.opacity_label)
-
-
 
         self.opacity_slider = QSlider(Qt.Horizontal)
 
@@ -122,8 +96,6 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(op_layout)
 
-
-
         hint_lbl = QLabel(
 
             "Dismiss the canvas hint permanently after you learn pan/zoom controls."
@@ -136,15 +108,11 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(hint_lbl)
 
-
-
         dismiss_hint_btn = QPushButton("Dismiss workspace hints")
 
         dismiss_hint_btn.clicked.connect(self._dismiss_canvas_hint)
 
         layout.addWidget(dismiss_hint_btn)
-
-
 
         log_btn = QPushButton("Open log folder")
 
@@ -152,15 +120,11 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(log_btn)
 
-
-
         backup_btn = QPushButton("Backup library (zip)…")
 
         backup_btn.clicked.connect(self._backup_library)
 
         layout.addWidget(backup_btn)
-
-
 
         restore_btn = QPushButton("Restore from backup…")
 
@@ -168,19 +132,13 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(restore_btn)
 
-
-
         layout.addStretch()
-
-
 
     def _build_danbooru_tab(self) -> None:
 
         layout = QVBoxLayout(self.tab_danbooru)
 
         layout.setAlignment(Qt.AlignTop)
-
-
 
         intro = QLabel(
 
@@ -195,8 +153,6 @@ class SettingsDialog(QDialog):
         intro.setStyleSheet("color: #94A3B8; font-size: 11px;")
 
         layout.addWidget(intro)
-
-
 
         help_row = QHBoxLayout()
 
@@ -216,11 +172,11 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(help_row)
 
-
-
         layout.addWidget(QLabel("Username"))
 
         self.danbooru_login_edit = QLineEdit()
+
+        self.danbooru_login_edit.setClearButtonEnabled(True)
 
         self.danbooru_login_edit.setPlaceholderText("Your Danbooru username")
 
@@ -228,11 +184,11 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(self.danbooru_login_edit)
 
-
-
         layout.addWidget(QLabel("API key"))
 
         self.danbooru_api_key_edit = QLineEdit()
+
+        self.danbooru_api_key_edit.setClearButtonEnabled(True)
 
         self.danbooru_api_key_edit.setPlaceholderText("Paste API key from your Danbooru profile")
 
@@ -241,8 +197,6 @@ class SettingsDialog(QDialog):
         self.danbooru_api_key_edit.setText(self._settings.get_danbooru_api_key())
 
         layout.addWidget(self.danbooru_api_key_edit)
-
-
 
         show_key_btn = QPushButton("Show / hide API key")
 
@@ -253,8 +207,6 @@ class SettingsDialog(QDialog):
         show_key_btn.clicked.connect(self._toggle_api_key_visibility)
 
         layout.addWidget(show_key_btn)
-
-
 
         env_hint = QLabel(
 
@@ -269,8 +221,6 @@ class SettingsDialog(QDialog):
         env_hint.setStyleSheet("color: #64748B; font-size: 10px;")
 
         layout.addWidget(env_hint)
-
-
 
         btn_row = QHBoxLayout()
 
@@ -292,8 +242,6 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(btn_row)
 
-
-
         self._danbooru_status = QLabel("")
 
         self._danbooru_status.setStyleSheet("color: #94A3B8; font-size: 11px;")
@@ -302,11 +250,7 @@ class SettingsDialog(QDialog):
 
         self._update_danbooru_status_label()
 
-
-
         layout.addStretch()
-
-
 
     def _toggle_api_key_visibility(self) -> None:
 
@@ -317,8 +261,6 @@ class SettingsDialog(QDialog):
         else:
 
             self.danbooru_api_key_edit.setEchoMode(QLineEdit.Password)
-
-
 
     def _update_danbooru_status_label(self) -> None:
 
@@ -338,8 +280,6 @@ class SettingsDialog(QDialog):
 
             self._danbooru_status.setText("No credentials — anonymous search (lower rate limits).")
 
-
-
     def _apply_danbooru_credentials_to_app(self) -> None:
 
         main = self.parent()
@@ -347,8 +287,6 @@ class SettingsDialog(QDialog):
         if main and hasattr(main, "danbooru_view"):
 
             main.danbooru_view.refresh_credentials()
-
-
 
     def _save_danbooru_credentials(self) -> None:
 
@@ -404,8 +342,6 @@ class SettingsDialog(QDialog):
 
             )
 
-
-
     def _clear_danbooru_credentials(self) -> None:
 
         self.danbooru_login_edit.clear()
@@ -419,8 +355,6 @@ class SettingsDialog(QDialog):
         self._apply_danbooru_credentials_to_app()
 
         self._update_danbooru_status_label()
-
-
 
     def _on_opacity_changed(self, val: int) -> None:
 
@@ -436,8 +370,6 @@ class SettingsDialog(QDialog):
 
         self.setWindowOpacity(val / 100.0)
 
-
-
     def _dismiss_canvas_hint(self) -> None:
 
         self._settings.set_show_canvas_hint(False)
@@ -447,8 +379,6 @@ class SettingsDialog(QDialog):
         if main and hasattr(main, "workspace_view"):
 
             main.workspace_view._hud.hide()
-
-
 
     def _backup_library(self) -> None:
 
@@ -479,8 +409,6 @@ class SettingsDialog(QDialog):
         except Exception as exc:
 
             QMessageBox.critical(self, "Backup failed", str(exc))
-
-
 
     def _restore_library(self) -> None:
 
@@ -536,8 +464,6 @@ class SettingsDialog(QDialog):
 
             QMessageBox.critical(self, "Restore failed", str(exc))
 
-
-
     def _open_log_folder(self) -> None:
 
         log_dir = get_base_dir() / "data" / "logs"
@@ -556,15 +482,11 @@ class SettingsDialog(QDialog):
 
             webbrowser.open(log_dir.as_uri())
 
-
-
     def _build_about_tab(self):
 
         layout = QVBoxLayout(self.tab_about)
 
         layout.setAlignment(Qt.AlignTop)
-
-
 
         def add_info(title, value, is_link=False):
 
@@ -573,8 +495,6 @@ class SettingsDialog(QDialog):
             title_lbl.setStyleSheet("font-weight: bold; color: #E2E8F0;")
 
             layout.addWidget(title_lbl)
-
-
 
             val_lbl = QLabel(value)
 
@@ -592,8 +512,6 @@ class SettingsDialog(QDialog):
 
             layout.addWidget(val_lbl)
 
-
-
             line = QFrame()
 
             line.setFrameShape(QFrame.HLine)
@@ -602,8 +520,6 @@ class SettingsDialog(QDialog):
 
             layout.addWidget(line)
 
-
-
         add_info("Software Version:", APP_VERSION)
 
         add_info("License:", "MIT License — free for personal and commercial use.")
@@ -611,5 +527,4 @@ class SettingsDialog(QDialog):
         add_info("Requirements:", "Windows 10/11 (64-bit) · 4 GB RAM · 1280×720 display")
 
         add_info("Support:", "Report an issue on GitHub", is_link=True)
-
 
