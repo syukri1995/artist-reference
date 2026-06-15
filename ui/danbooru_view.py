@@ -375,6 +375,7 @@ class DanbooruView(QWidget):
 
         search_row = QHBoxLayout()
         self.tag_input = QLineEdit()
+        self.tag_input.setClearButtonEnabled(True)
         self.tag_input.setPlaceholderText("Start typing a tag… e.g. nami")
         self.tag_input.returnPressed.connect(self._on_tag_return)
         self.tag_input.textChanged.connect(self._on_tag_text_changed)
