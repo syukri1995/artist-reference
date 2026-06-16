@@ -167,6 +167,8 @@ class WorkspaceManager:
         conn.close()
 
         state_dict = {}
+        missing_image_ids = []
+
         for row in rows:
             d = dict(row)
             if "image_id" in d and d["image_id"] is not None:
@@ -183,13 +185,30 @@ class WorkspaceManager:
                     "grayscale": bool(d.get("grayscale", 0)),
                 }
             elif d.get("file_path"):
-                conn2 = get_connection()
-                c2 = conn2.cursor()
-                c2.execute("SELECT id FROM images WHERE file_path = ?", (d["file_path"],))
-                id_row = c2.fetchone()
-                conn2.close()
-                if id_row:
-                    image_id = int(id_row["id"])
+                missing_image_ids.append(d)
+
+        if missing_image_ids:
+            conn2 = get_connection()
+            c2 = conn2.cursor()
+
+            # Extract unique file paths
+            file_paths = list({d["file_path"] for d in missing_image_ids})
+            path_to_id = {}
+
+            # Batch query in chunks of 900 to avoid SQLite limits
+            chunk_size = 900
+            for i in range(0, len(file_paths), chunk_size):
+                chunk = file_paths[i:i + chunk_size]
+                placeholders = ",".join(["?"] * len(chunk))
+                c2.execute(f"SELECT id, file_path FROM images WHERE file_path IN ({placeholders})", chunk)
+                for id_row in c2.fetchall():
+                    path_to_id[id_row["file_path"]] = int(id_row["id"])
+
+            conn2.close()
+
+            for d in missing_image_ids:
+                if d["file_path"] in path_to_id:
+                    image_id = path_to_id[d["file_path"]]
                     state_dict[image_id] = {
                         "file_path": d["file_path"],
                         "x": d["x"],
@@ -201,6 +220,7 @@ class WorkspaceManager:
                         "opacity": float(d.get("opacity", 1.0) or 1.0),
                         "grayscale": bool(d.get("grayscale", 0)),
                     }
+
         return state_dict
 
     def delete_for_image_ids(self, image_ids: list[int]) -> None:
