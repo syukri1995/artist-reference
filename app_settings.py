@@ -102,6 +102,24 @@ class AppSettings:
     def set_danbooru_api_key(self, api_key: str) -> None:
         self._s.setValue("danbooru/api_key", api_key.strip())
 
+    def get_workspace_slot_name(self, slot_id: int) -> str:
+        return str(self._s.value(f"workspace/slot_name_{slot_id}", f"Slot {slot_id}"))
+
+    def set_workspace_slot_name(self, slot_id: int, name: str) -> None:
+        self._s.setValue(f"workspace/slot_name_{slot_id}", name.strip())
+
+    def get_safe_mode(self) -> bool:
+        return self._s.value("gallery/safe_mode", True, type=bool)
+
+    def set_safe_mode(self, enabled: bool) -> None:
+        self._s.setValue("gallery/safe_mode", bool(enabled))
+
+    def get_items_per_page(self) -> int:
+        return int(self._s.value("gallery/items_per_page", 50))
+
+    def set_items_per_page(self, value: int) -> None:
+        self._s.setValue("gallery/items_per_page", max(10, min(200, value)))
+
     def clear_danbooru_credentials(self) -> None:
         self._s.remove("danbooru/login")
         self._s.remove("danbooru/api_key")

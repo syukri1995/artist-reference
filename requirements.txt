@@ -2,3 +2,6 @@ PyQt5==5.15.11
 Pillow==10.4.0
 certifi>=2024.2.2
 requests>=2.31.0
+numpy>=1.24.0
+onnxruntime>=1.15.0
+opencv-python>=4.8.0

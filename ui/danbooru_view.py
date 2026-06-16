@@ -3,7 +3,6 @@ danbooru_view.py — Search Danbooru and import images into the library.
 """
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QPixmap
@@ -26,10 +25,10 @@ from PyQt5.QtWidgets import (
 )
 
 from app_settings import get_settings
-from managers.danbooru_manager import DanbooruError, DanbooruManager, DanbooruPost
+from managers.danbooru_manager import DanbooruManager, DanbooruPost
 from managers.image_manager import ImageManager
 from managers.tag_manager import TagManager
-from ui.image_load_queue import ImageLoadQueue, pixmap_from_bytes
+from ui.image_load_queue import ImageLoadQueue, image_from_bytes
 from ui.loading_indicator import LoadingSpinner, LoadingStatusBar
 
 logger = logging.getLogger(__name__)
@@ -203,42 +202,89 @@ class PostCard(QWidget):
         super().__init__()
         self.post_id = post.id
         self._selected = False
-        self.setFixedSize(160, 200)
+        self.setFixedSize(160, 210)
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_StyledBackground, True)
+        
+        self._normal_style = """
+            PostCard { 
+                background-color: #161D2F; 
+                border: 1px solid #252F44; 
+                border-radius: 8px; 
+            }
+            PostCard:hover {
+                background-color: #1C253C;
+                border-color: #334155;
+            }
+        """
+        self._selected_style = """
+            PostCard { 
+                background-color: #1C253C; 
+                border: 2px solid #8B5CF6; 
+                border-radius: 8px; 
+            }
+        """
+        self.setStyleSheet(self._normal_style)
+
+        self._thumb_border_normal = """
+            QFrame#thumbWrap {
+                background-color: #0B0F1A;
+                border-radius: 4px;
+                border: 1px solid transparent;
+            }
+        """
+        self._thumb_border_selected = """
+            QFrame#thumbWrap {
+                background-color: #0B0F1A;
+                border-radius: 4px;
+                border: 2px solid #8B5CF6;
+            }
+        """
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        self.thumb_wrap = QWidget()
-        self.thumb_wrap.setFixedSize(150, 150)
-        self.thumb_wrap.setAttribute(Qt.WA_StyledBackground, True)
-        self._thumb_border_normal = (
-            "background-color: #1E293B; border: 2px solid #334155; border-radius: 6px;"
-        )
-        self._thumb_border_selected = (
-            "background-color: #1E293B; border: 3px solid #7C3AED; border-radius: 6px;"
-        )
-        self.thumb_wrap.setStyleSheet(self._thumb_border_normal)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        # Thumbnail
+        self.thumb_wrap = QFrame()
+        self.thumb_wrap.setFixedSize(148, 148)
+        self.thumb_wrap.setObjectName("thumbWrap")
+        self.thumb_wrap.setStyleSheet("""
+            QFrame#thumbWrap {
+                background-color: #0B0F1A;
+                border-radius: 4px;
+            }
+        """)
+        
         thumb_inner = QVBoxLayout(self.thumb_wrap)
         thumb_inner.setContentsMargins(0, 0, 0, 0)
         thumb_inner.setAlignment(Qt.AlignCenter)
+        
         self._spinner = LoadingSpinner(32, self.thumb_wrap)
         self.thumb = QLabel()
-        self.thumb.setFixedSize(150, 150)
+        self.thumb.setFixedSize(148, 148)
         self.thumb.setAlignment(Qt.AlignCenter)
         self.thumb.hide()
+        
         thumb_inner.addWidget(self._spinner, alignment=Qt.AlignCenter)
         thumb_inner.addWidget(self.thumb, alignment=Qt.AlignCenter)
         self._spinner.start()
         layout.addWidget(self.thumb_wrap)
-        self.meta = QLabel(f"#{post.id} · {post.rating or '?'}")
+
+        # Meta
+        self.meta = QLabel(f"#{post.id}")
         self.meta.setAlignment(Qt.AlignCenter)
-        self.meta.setStyleSheet("color: #94A3B8; font-size: 10px;")
+        self.meta.setStyleSheet("color: #F1F5F9; font-size: 11px; font-weight: 600;")
         layout.addWidget(self.meta)
-        self._preview_badge = QLabel("Preview")
+        
+        rating_map = {"g": "General", "s": "Sensitive", "q": "Questionable", "e": "Explicit"}
+        rating_color = {"g": "#10B981", "s": "#F59E0B", "q": "#F97316", "e": "#EF4444"}
+        r = (post.rating or "g").lower()
+        
+        self._preview_badge = QLabel(rating_map.get(r, "Unknown"))
         self._preview_badge.setAlignment(Qt.AlignCenter)
-        self._preview_badge.setStyleSheet("color: #64748B; font-size: 9px;")
+        self._preview_badge.setStyleSheet(f"color: {rating_color.get(r, '#94A3B8')}; font-size: 9px; font-weight: bold; text-transform: uppercase;")
         layout.addWidget(self._preview_badge)
-        self._apply_style()
 
     def set_import_available(self, available: bool) -> None:
         if available:
@@ -268,6 +314,7 @@ class PostCard(QWidget):
         return self._selected
 
     def _apply_style(self) -> None:
+        self.setStyleSheet(self._selected_style if self._selected else self._normal_style)
         self.thumb_wrap.setStyleSheet(
             self._thumb_border_selected if self._selected else self._thumb_border_normal
         )
@@ -480,8 +527,8 @@ class DanbooruView(QWidget):
         self._import_banner.setObjectName("importBanner")
         self._import_banner.hide()
         self._import_banner.setStyleSheet(
-            "QFrame#importBanner { background-color: #1E293B; border: 1px solid #334155; "
-            "border-radius: 8px; padding: 4px; }"
+            "background-color: #1E293B; border: 1px solid #334155; "
+            "border-radius: 8px; padding: 4px;"
         )
         banner_layout = QHBoxLayout(self._import_banner)
         banner_layout.setContentsMargins(14, 10, 14, 10)
@@ -897,7 +944,7 @@ class DanbooruView(QWidget):
                 def loader():
                     data = m.fetch_preview_bytes(p)
                     if data:
-                        return pixmap_from_bytes(data, max_size=(120, 120))
+                        return image_from_bytes(data, max_size=(120, 120))
                     return None
                 return loader
 
@@ -1041,8 +1088,8 @@ class DanbooruView(QWidget):
         )
         self._import_banner_detail.setText(detail)
         self._import_banner.setStyleSheet(
-            f"QFrame#importBanner {{ background-color: {bg}; border: 1px solid {border}; "
-            "border-radius: 8px; }}"
+            f"background-color: {bg}; border: 1px solid {border}; "
+            "border-radius: 8px;"
         )
         self._import_banner_dismiss.setVisible(show_dismiss)
         self._import_banner.show()

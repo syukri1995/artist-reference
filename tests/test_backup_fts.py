@@ -13,7 +13,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db_path, init_db, rebuild_images_fts, reset_thread_connection
 from managers.backup_manager import BackupManager
 from managers.image_manager import ImageManager
-from managers.tag_manager import TagManager
 
 
 class TestBackupAndFts(unittest.TestCase):

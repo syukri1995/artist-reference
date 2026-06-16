@@ -1,8 +1,64 @@
 """Graphics items for the workspace canvas."""
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QImage, QPixmap, QTransform
-from PyQt5.QtWidgets import QGraphicsItem, QGraphicsPixmapItem
+from PyQt5.QtCore import Qt, QRectF, QPointF
+from PyQt5.QtGui import QImage, QPixmap, QTransform, QColor, QFont, QPen, QBrush
+from PyQt5.QtWidgets import QGraphicsItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsTextItem
+
+
+class StickyNoteItem(QGraphicsRectItem):
+    """A resizable, colored text box for the workspace canvas."""
+
+    def __init__(self, text: str = "New Note", x: float = 0, y: float = 0, width: float = 200, height: float = 150, color: str = "#FDE047") -> None:
+        super().__init__(0, 0, width, height)
+        self.setPos(x, y)
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self._color = QColor(color)
+        self._locked = False
+        
+        # Text item
+        self.text_item = QGraphicsTextItem(text, self)
+        self.text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+        self.text_item.setPos(5, 5)
+        self.text_item.setTextWidth(width - 10)
+        
+        font = QFont("Segoe UI", 12)
+        self.text_item.setFont(font)
+        
+        self.update_appearance()
+
+    def update_appearance(self) -> None:
+        self.setBrush(QBrush(self._color))
+        # Subtle border
+        self.setPen(QPen(self._color.darker(120), 1))
+        self.text_item.setDefaultTextColor(Qt.black if self._color.lightness() > 128 else Qt.white)
+
+    def set_locked(self, locked: bool) -> None:
+        self._locked = locked
+        if locked:
+            self.setFlags(self.flags() & ~QGraphicsItem.ItemIsMovable)
+            self.text_item.setTextInteractionFlags(Qt.NoTextInteraction)
+        else:
+            self.setFlags(self.flags() | QGraphicsItem.ItemIsMovable)
+            self.text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+
+    def paint(self, painter, option, widget) -> None:
+        # Custom paint to handle selection state better
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            painter.setPen(QPen(QColor("#8B5CF6"), 2, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(self.rect())
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange:
+            ws = getattr(self.scene(), "_workspace", None)
+            if ws and hasattr(ws, "_handle_item_move"):
+                return ws._handle_item_move(self, value)
+        return super().itemChange(change, value)
 
 
 class GraphicsPixmapItem(QGraphicsPixmapItem):

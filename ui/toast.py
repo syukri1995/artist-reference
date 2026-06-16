@@ -1,7 +1,7 @@
 """Non-blocking toast notifications."""
 
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import QLabel, QWidget
 
 
 class ToastOverlay(QWidget):
@@ -14,9 +14,9 @@ class ToastOverlay(QWidget):
         self._label.setAlignment(Qt.AlignCenter)
         self._label.setWordWrap(True)
         self._label.setStyleSheet(
-            "background-color: #1E293B; color: #E2E8F0; "
-            "border: 1px solid #7C3AED; border-radius: 8px; "
-            "padding: 12px 20px; font-size: 13px;"
+            "background-color: #161D2F; color: #F1F5F9; "
+            "border: 1px solid #8B5CF6; border-radius: 10px; "
+            "padding: 12px 24px; font-size: 13px; font-weight: 500;"
         )
         self._label.hide()
         self._timer = QTimer(self)

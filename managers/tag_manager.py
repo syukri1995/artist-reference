@@ -28,6 +28,22 @@ class TagManager:
         conn.close()
         return tags
 
+    def get_popular_tags(self, limit: int = 15):
+        """Returns the most frequently used tags."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT t.id, t.name, COUNT(it.image_id) as count
+            FROM tags t
+            LEFT JOIN image_tags it ON t.id = it.tag_id
+            GROUP BY t.id
+            ORDER BY count DESC, t.name ASC
+            LIMIT ?
+        """, (limit,))
+        tags = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return tags
+
     def tag_image(self, image_id: int, tag_id: int) -> bool:
         return self.tag_images([image_id], tag_id)
 
@@ -74,12 +90,38 @@ class TagManager:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT t.id, t.name FROM tags t JOIN image_tags it ON t.id = it.tag_id WHERE it.image_id = ?",
+            "SELECT t.id, t.name, it.is_ai, it.confidence FROM tags t JOIN image_tags it ON t.id = it.tag_id WHERE it.image_id = ?",
             (image_id,)
         )
         tags = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return tags
+
+    def tag_image_ai(self, image_id: int, tag_name: str, confidence: float) -> bool:
+        """Apply an AI-generated tag to an image."""
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Ensure tag exists
+            cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+            cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            tag_id = row["id"]
+            
+            # Link with AI flag and confidence
+            cursor.execute('''
+                INSERT OR REPLACE INTO image_tags (image_id, tag_id, is_ai, confidence)
+                VALUES (?, ?, 1, ?)
+            ''', (image_id, tag_id, confidence))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to apply AI tag: {e}")
+            return False
 
     def remove_all_tags_from_image(self, image_id: int) -> bool:
         try:

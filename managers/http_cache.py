@@ -12,8 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import certifi
+import urllib3
 
 from database import get_base_dir
+
+# Suppress SSL verification warnings if user explicitly disabled it
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 

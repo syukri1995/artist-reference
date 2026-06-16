@@ -469,6 +469,14 @@ class DanbooruManager:
         dest = dest_dir / safe_name
 
         data = self._fetch_url_bytes(url, max_bytes=50 * 1024 * 1024, cache_sec=0)
+        
+        # Validation: Check for HTML tags at start of data (common on expired/protected links)
+        if data.startswith((b"<!DOCTYPE", b"<html", b"<HTML")):
+            raise DanbooruError(
+                f"Post {post.id} download returned HTML instead of an image. "
+                "This usually means the direct link has expired or the file is protected."
+            )
+            
         dest.write_bytes(data)
         return dest
 

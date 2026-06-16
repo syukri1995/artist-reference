@@ -46,6 +46,68 @@ class WorkspaceManager:
         conn.commit()
         conn.close()
 
+    def save_notes(self, notes_list, slot_id=1):
+        """
+        notes_list: [{'text': str, 'x', 'y', 'width', 'height', 'z_order', 'color': str}, ...]
+        """
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM workspace_notes WHERE slot_id=?", (slot_id,))
+
+        if notes_list:
+            data_to_insert = [
+                (
+                    slot_id,
+                    n.get("text", ""),
+                    n["x"],
+                    n["y"],
+                    n["width"],
+                    n["height"],
+                    n["z_order"],
+                    n.get("color", "#FDE047"),
+                )
+                for n in notes_list
+            ]
+            cursor.executemany(
+                """
+                INSERT INTO workspace_notes
+                  (slot_id, text, x, y, width, height, z_order, color)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                data_to_insert,
+            )
+
+        conn.commit()
+        conn.close()
+
+    def load_notes(self, slot_id=1):
+        """
+        Returns list of dicts for notes in the given slot.
+        """
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, text, x, y, width, height, z_order, color
+            FROM workspace_notes
+            WHERE slot_id=?
+            ORDER BY z_order ASC
+            """,
+            (slot_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for n, r in enumerate(rows)]
+
+    def get_slot_counts(self) -> dict[int, int]:
+        """Returns {slot_id: count_of_images}."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT slot_id, COUNT(*) FROM workspace_state GROUP BY slot_id")
+        rows = cursor.fetchall()
+        conn.close()
+        return {int(row[0]): int(row[1]) for row in rows}
+
     def load_state(self, slot_id=1):
         """
         Returns {image_id: {'file_path', 'x', 'y', 'scale', 'z_order', 'flip_h', 'flip_v'}}

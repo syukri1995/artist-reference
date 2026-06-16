@@ -21,23 +21,23 @@ class ProcessWorker(QThread):
     def run(self):
         for item in self.items:
             try:
-                # 1. Generate small thumbnail QPixmap bytes-like via PIL
-                img = Image.open(item['path'])
-                img.thumbnail((100, 100))
-                
-                # Convert PIL to QImage safely without crashing Python C bindings
-                if img.mode == "RGB":
-                    r, g, b = img.split()
-                    img = Image.merge("RGB", (b, g, r))
-                elif img.mode == "RGBA":
-                    r, g, b, a = img.split()
-                    img = Image.merge("RGBA", (b, g, r, a))
-                elif img.mode == "L":
-                    img = img.convert("RGBA")
+                # 1. Generate small thumbnail QImage via PIL
+                with Image.open(item['path']) as img:
+                    img.thumbnail((100, 100))
                     
-                data = img.tobytes("raw", "RGBA")
-                qim = QImage(data, img.size[0], img.size[1], QImage.Format_ARGB32)
-                item['qpixmap'] = QPixmap.fromImage(qim)
+                    # Convert PIL to QImage safely without crashing Python C bindings
+                    if img.mode == "RGB":
+                        r, g, b = img.split()
+                        img = Image.merge("RGB", (b, g, r))
+                    elif img.mode == "RGBA":
+                        r, g, b, a = img.split()
+                        img = Image.merge("RGBA", (b, g, r, a))
+                    elif img.mode == "L":
+                        img = img.convert("RGBA")
+                        
+                    data = img.tobytes("raw", "RGBA")
+                    # copy() to avoid data dependency on original PIL image
+                    item['qimage'] = QImage(data, img.size[0], img.size[1], QImage.Format_ARGB32).copy()
                 
                 # 2. Compute hash
                 hash_md5 = hashlib.md5()
@@ -376,8 +376,9 @@ class UploadView(QWidget):
             item['ui_row'].setText(f"Error loading {item['path'].name}")
             item['ui_row'].setStyleSheet("color: #EF4444;")
         else:
-            if item.get('qpixmap'):
-                item['thumb_lbl'].setPixmap(item['qpixmap'])
+            if item.get('qimage'):
+                pix = QPixmap.fromImage(item['qimage'])
+                item['thumb_lbl'].setPixmap(pix)
                 item['thumb_lbl'].setText("")
 
             if item['status'] == 'duplicate':

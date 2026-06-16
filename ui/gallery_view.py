@@ -2,31 +2,52 @@
 gallery_view.py — Main gallery browser with sidebar navigation and async image loading.
 """
 import math
-import re
+import logging
+import threading
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QPoint, QTimer, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import Qt, QPoint, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize, pyqtProperty
+from PyQt5.QtGui import QPixmap, QIcon, QColor
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
     QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout,
-    QWidget,
+    QWidget, QGraphicsBlurEffect, QGraphicsOpacityEffect
 )
 
 from app_settings import get_settings
 from managers.collection_manager import CollectionManager
 from managers.image_manager import ImageManager
 from managers.tag_manager import TagManager
-from ui.branding import app_logo_pixmap
+from ui.branding import app_logo_pixmap, icon_path
 from ui.image_load_queue import ImageLoadQueue
 from ui.loading_indicator import LoadingSpinner, LoadingStatusBar
+from ui.image_viewer import ImageViewer
 from ui.tag_edit_dialog import TagEditDialog
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Clickable image card
+# UI Components
 # ---------------------------------------------------------------------------
+
+class ElidedLabel(QLabel):
+    """A label that middle-elides text to fit its width."""
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+
+    def setText(self, text):
+        self._full_text = text
+        super().setText(text)
+        self.update()
+
+    def paintEvent(self, event):
+        from PyQt5.QtGui import QPainter, QFontMetrics
+        painter = QPainter(self)
+        metrics = QFontMetrics(self.font())
+        elided = metrics.elidedText(self._full_text, Qt.ElideMiddle, self.width())
+        painter.drawText(self.rect(), self.alignment(), elided)
 
 class ImageCard(QWidget):
     """Thumbnail card with filename, favorite badge, and selection state."""
@@ -35,72 +56,168 @@ class ImageCard(QWidget):
     double_clicked = pyqtSignal()
     right_clicked = pyqtSignal(QPoint)
 
-    _STYLE_NORMAL = (
-        "ImageCard { background-color: #1E293B; border: 2px solid #334155; border-radius: 8px; }"
-    )
-    _STYLE_SELECTED = (
-        "ImageCard { background-color: #1E293B; border: 2px solid #7C3AED; border-radius: 8px; }"
-    )
-
-    def __init__(self, file_path: str, is_favorite: bool = False, missing: bool = False) -> None:
+    def __init__(self, file_path: str, is_favorite: bool = False, missing: bool = False, card_size: int = 220) -> None:
         super().__init__()
         self.file_path = file_path
         self._selected = False
         self._missing = missing
-        self.setFixedSize(220, 248)
+        self._is_favorite = is_favorite
+        self._is_sensitive = False
+        self._pixmap = None
+        self._card_width = card_size
+        self._bg_color = QColor("#1E1B4B") # Initial pending color
+        
         self.setAttribute(Qt.WA_StyledBackground, True)
-        if missing:
-            self.setStyleSheet(
-                "ImageCard { background-color: #1E293B; border: 2px solid #DC2626; border-radius: 8px; }"
-            )
+        
+        # Style Constants (Colors only, border/radius handled in base style)
+        self.COLORS = {
+            'normal': "#161D2F",
+            'normal_hover': "#1C253C",
+            'selected': "#1C253C",
+            'scanning': "#0F172A",
+            'failed': "#450A0A",
+            'missing': "#161D2F",
+            'pending': "#1E1B4B",
+            'pending_hover': "#2E286D",
+            'pending_selected': "#2E286D"
+        }
+        
+        self._base_style = "ImageCard { border-radius: 8px; border: 1px solid #252F44; }"
+        self._selected_border = "border: 2px solid #8B5CF6;"
+        self._scanning_border = "border: 3px solid #00F2FF;"
+        self._failed_border = "border: 3px solid #EF4444;"
+        self._missing_border = "border: 1px solid #EF4444;"
+        self._pending_border = "border: 1px solid #3730A3;"
+
+        self._ai_status = 'pending'
         self.setToolTip(file_path)
-        self.setAccessibleName(Path(file_path).name)
+        
+        # Color Animation Setup
+        self._color_anim = QPropertyAnimation(self, b"backgroundColor")
+        self._color_anim.setDuration(300)
+        self._color_anim.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self.root_layout = QVBoxLayout(self)
+        self.root_layout.setContentsMargins(6, 6, 6, 6)
+        self.root_layout.setSpacing(6)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 4)
-        layout.setSpacing(4)
-
-        thumb_row = QHBoxLayout()
-        self.thumb_wrap = QWidget()
-        self.thumb_wrap.setFixedSize(200, 200)
-        self.thumb_wrap.setAttribute(Qt.WA_StyledBackground, True)
-        self._thumb_border_normal = (
-            "background-color: #1E293B; border: 2px solid #334155; border-radius: 6px;"
-        )
-        self._thumb_border_selected = (
-            "background-color: #1E293B; border: 3px solid #7C3AED; border-radius: 6px;"
-        )
-        self._thumb_border_missing = (
-            "background-color: #1E293B; border: 2px solid #DC2626; border-radius: 6px;"
-        )
-        self.thumb_wrap.setStyleSheet(
-            self._thumb_border_missing if missing else self._thumb_border_normal
-        )
-        thumb_inner = QVBoxLayout(self.thumb_wrap)
-        thumb_inner.setContentsMargins(0, 0, 0, 0)
-        thumb_inner.setAlignment(Qt.AlignCenter)
-        self._spinner = LoadingSpinner(40, self.thumb_wrap)
+        # Thumbnail Area
+        self.thumb_wrap = QFrame()
+        self.thumb_wrap.setObjectName("thumbWrap")
+        self.thumb_wrap.setStyleSheet("QFrame#thumbWrap { background-color: #0B0F1A; border-radius: 4px; }")
+        
+        self.thumb_inner = QVBoxLayout(self.thumb_wrap)
+        self.thumb_inner.setContentsMargins(0, 0, 0, 0)
+        self.thumb_inner.setAlignment(Qt.AlignCenter)
+        
+        self._spinner = LoadingSpinner(32, self.thumb_wrap)
+        self._spinning_status_container = QWidget()
+        self._spinner_layout = QVBoxLayout(self._spinning_status_container)
+        self._spinner_layout.setContentsMargins(0, 0, 0, 0)
+        self._spinner_layout.setSpacing(8)
+        self._spinner_layout.setAlignment(Qt.AlignCenter)
+        
+        self._scanning_spinner = LoadingSpinner(64, self._spinning_status_container)
+        self._scanning_spinner.hide()
+        
+        self.scanning_label = QLabel("SCANNING...", self._spinning_status_container)
+        self.scanning_label.setAlignment(Qt.AlignCenter)
+        self.scanning_label.setStyleSheet("""
+            background-color: #00F2FF; color: #0F172A; font-size: 11px;
+            font-weight: 800; border-radius: 4px; padding: 4px;
+        """)
+        self.scanning_label.hide()
+        
+        self._spinner_layout.addWidget(self._scanning_spinner, alignment=Qt.AlignCenter)
+        self._spinner_layout.addWidget(self.scanning_label, alignment=Qt.AlignCenter)
+        
         self.thumb = QLabel()
-        self.thumb.setFixedSize(200, 200)
         self.thumb.setAlignment(Qt.AlignCenter)
         self.thumb.hide()
-        thumb_inner.addWidget(self._spinner, alignment=Qt.AlignCenter)
-        thumb_inner.addWidget(self.thumb, alignment=Qt.AlignCenter)
-        thumb_row.addWidget(self.thumb_wrap)
-        if is_favorite:
-            star = QLabel("★")
-            star.setStyleSheet("color: #F59E0B; font-size: 14px; border: none;")
-            star.setFixedWidth(16)
-            thumb_row.addWidget(star, alignment=Qt.AlignTop)
-        layout.addLayout(thumb_row)
+        
+        self.thumb_inner.addWidget(self._spinner, alignment=Qt.AlignCenter)
+        self.thumb_inner.addWidget(self._spinning_status_container, alignment=Qt.AlignCenter)
+        self.thumb_inner.addWidget(self.thumb, alignment=Qt.AlignCenter)
+        self.root_layout.addWidget(self.thumb_wrap)
 
-        name = Path(file_path).name
-        if len(name) > 28:
-            name = name[:25] + "…"
-        self.name_label = QLabel(name)
-        self.name_label.setStyleSheet("color: #94A3B8; font-size: 11px; border: none;")
-        self.name_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.name_label)
+        # Blur effect for sensitive content
+        self._blur_effect = QGraphicsBlurEffect(self.thumb)
+        self._blur_effect.setBlurRadius(25)
+        self._blur_effect.setEnabled(False)
+
+        # Meta Info
+        self.info_row = QHBoxLayout()
+        self.info_row.setContentsMargins(4, 0, 4, 0)
+        
+        self.name_label = QLabel()
+        self.name_label.setStyleSheet("color: #F1F5F9; font-size: 11px; font-weight: 500;")
+        self.info_row.addWidget(self.name_label, stretch=1)
+        
+        self.star_label = QLabel("★")
+        self.star_label.setStyleSheet("color: #F59E0B; font-size: 12px;")
+        self.star_label.setVisible(is_favorite)
+        self.info_row.addWidget(self.star_label)
+            
+        self.root_layout.addLayout(self.info_row)
+        self.update_size(card_size)
+        self._update_full_style()
+
+    @pyqtProperty(QColor)
+    def backgroundColor(self):
+        return self._bg_color
+
+    @backgroundColor.setter
+    def backgroundColor(self, color):
+        self._bg_color = color
+        self._update_full_style()
+
+    def _update_full_style(self):
+        """Re-construct the stylesheet using the current background color and border state."""
+        border = "border: 1px solid #252F44;" # Default
+        if self._missing: border = self._missing_border
+        elif self._ai_status == 'scanning': border = self._scanning_border
+        elif self._ai_status == 'failed': border = self._failed_border
+        elif self._selected: border = self._selected_border
+        elif self._ai_status == 'pending': border = self._pending_border
+        
+        style = f"ImageCard {{ background-color: {self._bg_color.name()}; {border} border-radius: 8px; }}"
+        self.setStyleSheet(style)
+
+    def _animate_to_color(self, hex_color):
+        target = QColor(hex_color)
+        if self._bg_color == target:
+            return
+        self._color_anim.stop()
+        self._color_anim.setStartValue(self._bg_color)
+        self._color_anim.setEndValue(target)
+        self._color_anim.start()
+
+    def update_size(self, size: int) -> None:
+        """Update card dimensions and rescale thumbnail."""
+        self._card_width = size
+        h = int(size * 1.2)
+        self.setFixedSize(size, h)
+        
+        thumb_size = size - 12
+        self.thumb_wrap.setFixedSize(thumb_size, thumb_size)
+        self.thumb.setFixedSize(thumb_size, thumb_size)
+        
+        # Size scanning spinner
+        sw = max(32, thumb_size // 3)
+        self._scanning_spinner.setFixedSize(sw, sw)
+        self._spinning_status_container.setFixedSize(thumb_size, thumb_size)
+        
+        name = Path(self.file_path).name
+        limit = max(10, size // 10)
+        if len(name) > limit:
+            name = name[:limit-3] + "..."
+        self.name_label.setText(name)
+        
+        if self._pixmap:
+            ts = self.thumb.width()
+            self.thumb.setPixmap(self._pixmap.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        
+        self.set_selected(self._selected)
 
     def set_loading(self, loading: bool) -> None:
         if loading:
@@ -108,26 +225,99 @@ class ImageCard(QWidget):
             self.thumb.hide()
         else:
             self._spinner.stop()
+            if self._pixmap and self._ai_status != 'scanning':
+                self.thumb.show()
 
     def set_pixmap(self, pixmap: QPixmap) -> None:
+        """Set the pixmap and trigger the initial fade-in animation."""
+        if pixmap is None or pixmap.isNull():
+            self.set_load_failed()
+            return
+            
+        self._pixmap = pixmap
         self.set_loading(False)
-        self.thumb.setPixmap(
-            pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        )
-        self.thumb.show()
+        ts = self.thumb.width() or self._card_width - 12
+        self.thumb.setPixmap(pixmap.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        
+        if self._ai_status != 'scanning':
+            self.thumb.show()
+            # Initial fade-in animation
+            eff = QGraphicsOpacityEffect()
+            self.thumb.setGraphicsEffect(eff)
+            self._fade_anim = QPropertyAnimation(eff, b"opacity")
+            self._fade_anim.setDuration(400)
+            self._fade_anim.setStartValue(0.0)
+            self._fade_anim.setEndValue(1.0)
+            self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._fade_anim.finished.connect(self._on_fade_finished)
+            self._fade_anim.start()
+
+    def _on_fade_finished(self) -> None:
+        self._update_safety_visuals()
 
     def set_load_failed(self) -> None:
         self.set_loading(False)
         self.thumb.setText("?")
-        self.thumb.setStyleSheet("color: #64748B; font-size: 24px; border: none;")
-        self.thumb.show()
+        self.thumb.setStyleSheet("color: #64748B; font-size: 32px;")
+        if self._ai_status != 'scanning':
+            self.thumb.show()
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
-        if self._missing:
-            return
-        border = self._thumb_border_selected if selected else self._thumb_border_normal
-        self.thumb_wrap.setStyleSheet(border)
+        color_key = 'normal'
+        if self._missing: color_key = 'missing'
+        elif self._ai_status == 'pending':
+            color_key = 'pending_selected' if selected else 'pending'
+        else:
+            color_key = 'selected' if selected else 'normal'
+            
+        self._animate_to_color(self.COLORS[color_key])
+
+    def set_ai_status(self, status: str, tags: list = None) -> None:
+        """Update the visual AI scanning status and sensitivity."""
+        self._ai_status = status
+        if status == 'scanning':
+            self.scanning_label.show()
+            self._spinning_status_container.show()
+            self._scanning_spinner.show()
+            self._scanning_spinner.start()
+            self.thumb.hide()
+            self._spinner.hide()
+            self._animate_to_color(self.COLORS['scanning'])
+        elif status == 'failed':
+            self.scanning_label.hide()
+            self._scanning_spinner.stop()
+            self._spinning_status_container.hide()
+            self.thumb.hide()
+            self._spinner.hide()
+            self._animate_to_color(self.COLORS['failed'])
+        else:
+            self.scanning_label.hide()
+            self._scanning_spinner.stop()
+            self._spinning_status_container.hide()
+            if self._pixmap:
+                self.thumb.show()
+                self._spinner.hide()
+            else:
+                self.thumb.hide()
+                self._spinner.show()
+                self._spinner.start()
+            self.set_selected(self._selected)
+        
+        if tags:
+            self._is_sensitive = any(t['name'] in ("Sensitive", "Questionable") for t in tags)
+            self._update_safety_visuals()
+
+    def _update_safety_visuals(self) -> None:
+        safe_mode = get_settings().get_safe_mode()
+        should_blur = self._is_sensitive and safe_mode
+        if should_blur:
+            blur = QGraphicsBlurEffect()
+            blur.setBlurRadius(25)
+            self.thumb.setGraphicsEffect(blur)
+        else:
+            if self.thumb.graphicsEffect():
+                self.thumb.setGraphicsEffect(None)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -138,1031 +328,866 @@ class ImageCard(QWidget):
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self.double_clicked.emit()
-        super().mouseDoubleClickEvent(event)
 
+    def enterEvent(self, event):
+        """Handle hover in."""
+        if not self._selected and not self._missing and self._ai_status != 'scanning':
+            key = 'pending_hover' if self._ai_status == 'pending' else 'normal_hover'
+            self._animate_to_color(self.COLORS[key])
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Handle hover out."""
+        self.set_selected(self._selected)
+        super().leaveEvent(event)
 
 # ---------------------------------------------------------------------------
-# Gallery view
+# Gallery View
 # ---------------------------------------------------------------------------
 
 class GalleryView(QWidget):
-    """Main gallery panel: topbar + sidebar + image grid + pagination."""
+    """Grid-based image explorer with sidebar navigation and async image loading."""
 
-    switch_to_workspace    = pyqtSignal(list, bool)
+    switch_to_workspace = pyqtSignal(list, bool)
     import_to_workspace_slot = pyqtSignal(list, int)
-    show_upload            = pyqtSignal()
-    show_danbooru          = pyqtSignal()
+    show_upload = pyqtSignal()
+    show_danbooru = pyqtSignal()
     show_detached_workspace = pyqtSignal(list, bool)
 
-    _ITEMS_PER_PAGE = 50
-
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, status_callback=None, toast_callback=None) -> None:
         super().__init__(parent)
-        self.image_mgr      = ImageManager()
-        self.collection_mgr = CollectionManager()
-        self.tag_mgr        = TagManager()
-
-        # Filter state
+        self._status = status_callback
+        self._toast = toast_callback
+        self.image_mgr = ImageManager()
+        self.tag_mgr = TagManager()
+        self.col_mgr = CollectionManager()
+        
+        self.selected_images = set()
+        self.path_to_id = {}
+        self._cards = {}
+        self._ordered_paths = []
+        
+        self.current_page = 1
+        self.columns = get_settings().get_columns() or 4
+        self.sort_by = get_settings().get_gallery_sort() or "date_added_desc"
+        
+        self.current_tag_id = None
         self.current_collection_id = None
-        self.filter_tag_ids        = None
-        self.current_search_term   = None
-        self.only_favorites        = False
-        self.only_recent           = False
-        self.current_page          = 1
-        self.total_pages           = 1
-        self.total_items           = 0
-        self.columns               = get_settings().get_columns()
-        self.sort_by               = get_settings().get_gallery_sort()
-        self._active_filter        = "all"
-        self._pending_focus_path: str | None = None
-        self._detail_image_id: int | None = None
-        self._filter_collection_name = None
-        self._filter_tag_name      = None
-        self._ordered_paths: list[str] = []
-        self._last_clicked_path: str | None = None
-
-        self.selected_images: set  = set()
-        self.path_to_id: dict      = {}
-        self._cards: dict          = {}
-
+        self.current_search = None
+        self.only_favorites = False
+        self.only_recent = False
+        
+        self._loading = False
         self._load_queue = ImageLoadQueue(self, worker_count=6)
         self._load_queue.image_ready.connect(self._on_thumbnail_ready)
-        self._load_queue.progress.connect(self._on_load_progress)
-        self._load_queue.queue_empty.connect(self._on_load_queue_empty)
-        self._load_generation = 0
-        self._search_timer = QTimer(self)
-        self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(300)
-        self._search_timer.timeout.connect(self._on_search_debounced)
-        self._nav_buttons: dict[str, QPushButton] = {}
 
-        self._setup_ui()
-        self.refresh_collections_list()
-        self.refresh_smart_collections_list()
-        self.refresh_tags_list()
+        self._init_ui()
         self.load_gallery()
 
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
-
-    def _setup_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        root.addWidget(self._build_topbar())
-
-        body = QHBoxLayout()
-        body.setSpacing(0)
-        body.addWidget(self._build_sidebar())
-        body.addLayout(self._build_gallery_area(), stretch=1)
-        root.addLayout(body, stretch=1)
-
-        self._autocomplete_menu = QMenu(self)
-
-    def _main_window(self):
-        w = self.window()
-        return w if hasattr(w, "show_status") else None
-
-    def _build_topbar(self) -> QWidget:
-        wrapper = QWidget()
-        wrapper.setStyleSheet("background-color: #1E293B;")
-        outer = QVBoxLayout(wrapper)
-        outer.setContentsMargins(16, 8, 16, 8)
-        outer.setSpacing(6)
-
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        logo_pix = app_logo_pixmap(40)
-        if logo_pix is not None:
-            logo_icon = QLabel()
-            logo_icon.setPixmap(logo_pix)
-            logo_icon.setFixedSize(40, 40)
-            logo_icon.setToolTip("Artist Reference Manager")
-            row.addWidget(logo_icon)
-        logo = QLabel("Artist Reference Manager")
-        logo.setStyleSheet("font-size: 20px; font-weight: bold; color: #E2E8F0;")
-        row.addWidget(logo)
-
-        self.search_entry = QLineEdit()
-        self.search_entry.setPlaceholderText("Search filenames or tags (FTS)…")
-        self.search_entry.setFixedWidth(280)
-        self.search_entry.returnPressed.connect(self._on_search)
-        self.search_entry.textChanged.connect(self._on_search_changed)
-        row.addWidget(self.search_entry)
-
-        row.addWidget(QLabel("Sort:"))
-        self.sort_combo = QComboBox()
-        for key, label in (
-            ("date_added_desc", "Newest"),
-            ("date_added_asc", "Oldest"),
-            ("name_asc", "Name A–Z"),
-            ("name_desc", "Name Z–A"),
-            ("last_viewed_desc", "Recently viewed"),
-            ("favorite_first", "Favorites first"),
-        ):
-            self.sort_combo.addItem(label, key)
-        idx = self.sort_combo.findData(self.sort_by)
-        if idx >= 0:
-            self.sort_combo.setCurrentIndex(idx)
-        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
-        row.addWidget(self.sort_combo)
-        row.addStretch()
-
-        row.addWidget(QLabel("Columns:"))
-        self.columns_slider = QSlider(Qt.Horizontal)
-        self.columns_slider.setRange(2, 8)
-        self.columns_slider.setValue(self.columns)
-        self.columns_slider.setFixedWidth(100)
-        self.columns_slider.valueChanged.connect(self._set_columns)
-        row.addWidget(self.columns_slider)
-
-        self.bulk_tag_btn = QPushButton("Retag Selected")
-        self.bulk_tag_btn.setEnabled(False)
-        self.bulk_tag_btn.clicked.connect(self._bulk_retag)
-        row.addWidget(self.bulk_tag_btn)
-
-        self.ws_open_btn = QPushButton("Open Workspace")
-        self.ws_open_btn.clicked.connect(self._open_workspace)
-        row.addWidget(self.ws_open_btn)
-
-        settings_btn = QPushButton("Settings")
-        settings_btn.clicked.connect(self._open_settings)
-        row.addWidget(settings_btn)
-
-        danbooru_btn = QPushButton("Danbooru")
-        danbooru_btn.setToolTip("Search and import from Danbooru")
-        danbooru_btn.clicked.connect(self.show_danbooru.emit)
-        row.addWidget(danbooru_btn)
-
-        upload_btn = QPushButton("Upload")
-        upload_btn.setStyleSheet("background-color: #7C3AED; border-color: #6D28D9;")
-        upload_btn.clicked.connect(self.show_upload.emit)
-        row.addWidget(upload_btn)
-        outer.addLayout(row)
-
-        crumb_row = QHBoxLayout()
-        self.breadcrumb_label = QLabel("All images")
-        self.breadcrumb_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
-        crumb_row.addWidget(self.breadcrumb_label)
-        crumb_row.addStretch()
-        self.clear_filters_btn = QPushButton("Clear filters")
-        self.clear_filters_btn.setFlat(True)
-        self.clear_filters_btn.setStyleSheet("color: #7C3AED; border: none;")
-        self.clear_filters_btn.clicked.connect(self.reset_filters)
-        self.clear_filters_btn.hide()
-        crumb_row.addWidget(self.clear_filters_btn)
-        outer.addLayout(crumb_row)
-
-        return wrapper
-
-    def _build_sidebar(self) -> QWidget:
-        sidebar = QWidget()
-        sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet("background-color: #0F172A;")
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
-
-        def nav_btn(key: str, label: str, slot, style: str = "") -> QPushButton:
-            b = QPushButton(label)
-            b.clicked.connect(slot)
-            if style:
-                b.setStyleSheet(style)
-            self._nav_buttons[key] = b
-            return b
-
-        layout.addWidget(nav_btn("all", "All Images", self.reset_filters))
-        layout.addWidget(nav_btn("favorites", "Favorites", self.set_favorites_filter, "color: #F59E0B;"))
-        layout.addWidget(nav_btn("recent", "Recently Viewed", self.set_recent_filter, "color: #10B981;"))
-
-        splitter = QSplitter(Qt.Vertical)
-
-        col_widget = QWidget()
-        col_layout = QVBoxLayout(col_widget)
-        col_layout.setContentsMargins(0, 0, 0, 0)
-        col_layout.addWidget(self._section_label("Collections"))
-        self.collections_list = QListWidget()
-        self.collections_list.itemClicked.connect(self._on_collection_clicked)
-        col_layout.addWidget(self.collections_list)
-        col_layout.addWidget(nav_btn("new_col", "+ New Collection", self._create_collection))
-        splitter.addWidget(col_widget)
-
-        smart_widget = QWidget()
-        smart_layout = QVBoxLayout(smart_widget)
-        smart_layout.setContentsMargins(0, 0, 0, 0)
-        smart_layout.addWidget(self._section_label("Smart Collections"))
-        self.smart_collections_list = QListWidget()
-        self.smart_collections_list.itemClicked.connect(
-            lambda item: self.set_smart_collection(item))
-        smart_layout.addWidget(self.smart_collections_list)
-        smart_layout.addWidget(nav_btn("new_smart", "+ New Smart", self._create_smart_collection))
-        splitter.addWidget(smart_widget)
-
-        tag_widget = QWidget()
-        tag_layout = QVBoxLayout(tag_widget)
-        tag_layout.setContentsMargins(0, 0, 0, 0)
-        tag_layout.addWidget(self._section_label("Tags"))
-        self.tags_list = QListWidget()
-        self.tags_list.itemClicked.connect(self._on_tag_clicked)
-        tag_layout.addWidget(self.tags_list)
-        tag_layout.addWidget(nav_btn("new_tag", "+ New Tag", self._create_tag))
-        splitter.addWidget(tag_widget)
-
-        splitter.setSizes([140, 100, 140])
-        layout.addWidget(splitter, stretch=1)
-
-        layout.addWidget(nav_btn("detach", "Detach Workspace", self._open_detached_workspace))
-        self._update_active_nav()
-        return sidebar
-
-    def _build_gallery_area(self) -> QVBoxLayout:
-        layout = QVBoxLayout()
+    def _init_ui(self) -> None:
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        content_split = QSplitter(Qt.Horizontal)
+        # 1. Sidebar Navigation
+        self.sidebar = self._build_sidebar()
+        layout.addWidget(self.sidebar)
 
+        # 2. Splitter for Center and Right Panel
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setStyleSheet("QSplitter::handle { background: #1E293B; width: 1px; }")
+        
+        # Center Content Area
+        self.center_area = QWidget()
+        self.center_layout = QVBoxLayout(self.center_area)
+        self.center_layout.setContentsMargins(0, 0, 0, 0)
+        self.center_layout.setSpacing(0)
+
+        # Top Bar
+        self.top_bar = self._build_top_bar()
+        self.center_layout.addWidget(self.top_bar)
+
+        # Scrollable Grid
         self.gallery_scroll = QScrollArea()
         self.gallery_scroll.setWidgetResizable(True)
-        self._gallery_widget = QWidget()
-        self.gallery_grid = QGridLayout(self._gallery_widget)
+        self.gallery_scroll.setStyleSheet("QScrollArea { border: none; background-color: #0F172A; }")
+        
+        self.gallery_container = QWidget()
+        self.gallery_container.setObjectName("galleryContainer")
+        self.gallery_container.setStyleSheet("QWidget#galleryContainer { background-color: #0F172A; }")
+        self.gallery_grid = QGridLayout(self.gallery_container)
+        self.gallery_grid.setContentsMargins(20, 20, 20, 20)
+        self.gallery_grid.setSpacing(20)
         self.gallery_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.gallery_grid.setSpacing(8)
-        self.gallery_scroll.setWidget(self._gallery_widget)
-        content_split.addWidget(self.gallery_scroll)
+        
+        self.gallery_scroll.setWidget(self.gallery_container)
+        self.center_layout.addWidget(self.gallery_scroll)
 
-        detail = QWidget()
-        detail.setMinimumWidth(220)
-        detail.setMaximumWidth(320)
-        detail.setStyleSheet("background-color: #0F172A;")
-        detail_layout = QVBoxLayout(detail)
-        detail_layout.setContentsMargins(12, 12, 12, 12)
-        detail_title = QLabel("Details")
-        detail_title.setStyleSheet("font-weight: bold; color: #E2E8F0; font-size: 13px;")
-        detail_layout.addWidget(detail_title)
-        self.detail_panel = QLabel("Select an image to view metadata.")
-        self.detail_panel.setWordWrap(True)
-        self.detail_panel.setAlignment(Qt.AlignTop)
-        self.detail_panel.setStyleSheet("color: #94A3B8; font-size: 12px;")
-        detail_layout.addWidget(self.detail_panel)
-        detail_layout.addStretch()
-        content_split.addWidget(detail)
-        content_split.setStretchFactor(0, 1)
-        content_split.setSizes([900, 260])
-
-        layout.addWidget(content_split, stretch=1)
-
-        # Pagination bar
-        pager = QWidget()
-        pager.setStyleSheet("background-color: #1E293B;")
-        pager.setFixedHeight(44)
-        p_row = QHBoxLayout(pager)
-        p_row.setContentsMargins(16, 0, 16, 0)
+        # Pagination Bar
+        self.pagination_bar = QWidget()
+        self.pagination_bar.setFixedHeight(44)
+        self.pagination_bar.setStyleSheet("background-color: #0F172A; border-top: 1px solid #1E293B;")
+        pb_layout = QHBoxLayout(self.pagination_bar)
+        pb_layout.setContentsMargins(20, 0, 20, 0)
 
         self.prev_page_btn = QPushButton("‹ Previous")
         self.prev_page_btn.clicked.connect(self._prev_page)
-        p_row.addWidget(self.prev_page_btn)
+        self.prev_page_btn.setStyleSheet("padding: 6px 12px; background: #1E293B; color: #E2E8F0; border-radius: 4px;")
 
-        self.result_count_label = QLabel("")
-        self.result_count_label.setStyleSheet("color: #94A3B8;")
-        p_row.addWidget(self.result_count_label)
-
-        self.page_label = QLabel("Page 1 / 1")
-        self.page_label.setAlignment(Qt.AlignCenter)
-        self.page_label.setStyleSheet("color: #E2E8F0;")
-        p_row.addWidget(self.page_label, stretch=1)
+        self.page_info_lbl = QLabel("Page 1 of 1")
+        self.page_info_lbl.setStyleSheet("color: #94A3B8; font-size: 13px; font-weight: bold;")
+        self.page_info_lbl.setAlignment(Qt.AlignCenter)
 
         self.next_page_btn = QPushButton("Next ›")
         self.next_page_btn.clicked.connect(self._next_page)
-        p_row.addWidget(self.next_page_btn)
+        self.next_page_btn.setStyleSheet("padding: 6px 12px; background: #1E293B; color: #E2E8F0; border-radius: 4px;")
 
-        self._load_status = LoadingStatusBar()
-        p_row.addWidget(self._load_status)
+        pb_layout.addStretch()
+        pb_layout.addWidget(self.prev_page_btn)
+        pb_layout.addSpacing(10)
+        pb_layout.addWidget(self.page_info_lbl)
+        pb_layout.addSpacing(10)
+        pb_layout.addWidget(self.next_page_btn)
+        pb_layout.addStretch()
 
-        layout.addWidget(pager)
-        return layout
+        self.center_layout.addWidget(self.pagination_bar)
 
-    @staticmethod
-    def _section_label(text: str) -> QLabel:
+        # Bottom Status Bar
+        self._load_status = LoadingStatusBar(self)
+        self.center_layout.addWidget(self._load_status)
+
+        self.main_splitter.addWidget(self.center_area)
+
+        # 3. Right Detail Panel
+        self.detail_panel_widget = self._build_detail_panel()
+        self.main_splitter.addWidget(self.detail_panel_widget)
+        self.main_splitter.setStretchFactor(0, 4)
+        self.main_splitter.setStretchFactor(1, 1)
+        
+        layout.addWidget(self.main_splitter)
+
+    def _build_sidebar(self) -> QWidget:
+        sidebar = QWidget()
+        sidebar.setFixedWidth(240)
+        sidebar.setStyleSheet("background-color: #0F172A; border-right: 1px solid #1E293B;")
+        
+        sl = QVBoxLayout(sidebar)
+        sl.setContentsMargins(15, 20, 15, 20)
+        sl.setSpacing(10)
+
+        # App Logo
+        logo_px = app_logo_pixmap(140)
+        if logo_px:
+            logo_btn = QPushButton()
+            logo_btn.setIcon(QIcon(logo_px))
+            logo_btn.setIconSize(logo_px.size())
+            logo_btn.setFlat(True)
+            logo_btn.setStyleSheet("background: transparent; border: none;")
+            logo_btn.setCursor(Qt.PointingHandCursor)
+            logo_btn.clicked.connect(self.reset_filters)
+            sl.addWidget(logo_btn, alignment=Qt.AlignCenter)
+            sl.addSpacing(10)
+
+        # Database Stats Badge
+        self.db_stats_badge = QLabel("💎 0 Images in Library")
+        self.db_stats_badge.setAlignment(Qt.AlignCenter)
+        self.db_stats_badge.setStyleSheet("""
+            QLabel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4F46E5, stop:1 #7C3AED);
+                color: #FFFFFF;
+                font-size: 11px;
+                font-weight: 900;
+                padding: 6px;
+                border-radius: 8px;
+                letter-spacing: 1px;
+            }
+        """)
+        sl.addWidget(self.db_stats_badge)
+        sl.addSpacing(10)
+
+        # Smart Filters
+        sl.addWidget(self._section_label("EXPLORE"))
+        self.nav_group = QButtonGroup(self)
+        
+        self.all_btn = self._build_nav_btn("All images", "layout-grid")
+        self.all_btn.setChecked(True)
+        self.all_btn.clicked.connect(self.reset_filters)
+        self.nav_group.addButton(self.all_btn)
+        sl.addWidget(self.all_btn)
+
+        self.fav_btn = self._build_nav_btn("Favorites", "heart")
+        self.fav_btn.clicked.connect(self.set_favorites_filter)
+        self.nav_group.addButton(self.fav_btn)
+        sl.addWidget(self.fav_btn)
+
+        self.recent_btn = self._build_nav_btn("Recent", "clock")
+        self.recent_btn.clicked.connect(self.set_recent_filter)
+        self.nav_group.addButton(self.recent_btn)
+        sl.addWidget(self.recent_btn)
+        
+        # Workspace Navigation
+        sl.addSpacing(10)
+        sl.addWidget(self._section_label("WORKSPACE"))
+        ws_btn = QPushButton("Open Workspace")
+        ws_btn.setStyleSheet("text-align: left; padding: 10px; color: #E2E8F0; background: #312E81; border-radius: 8px; font-weight: bold;")
+        ws_btn.clicked.connect(lambda: self.switch_to_workspace.emit(list(self.selected_images), True))
+        sl.addWidget(ws_btn)
+
+        # Collections List
+        sl.addSpacing(10)
+        sl.addWidget(self._section_label("COLLECTIONS"))
+        self.collections_list = QListWidget()
+        self.collections_list.setStyleSheet("background: transparent; border: none; outline: none; color: #94A3B8;")
+        self.collections_list.itemClicked.connect(self._on_collection_clicked)
+        sl.addWidget(self.collections_list, stretch=1)
+        
+        # Smart Collections
+        sl.addWidget(self._section_label("SMART COLLECTIONS"))
+        self.smart_collections_list = QListWidget()
+        self.smart_collections_list.setStyleSheet("background: transparent; border: none; outline: none; color: #94A3B8;")
+        self.smart_collections_list.itemClicked.connect(self.set_smart_collection)
+        sl.addWidget(self.smart_collections_list, stretch=1)
+
+        # Tags List
+        sl.addWidget(self._section_label("POPULAR TAGS"))
+        self.tags_list = QListWidget()
+        self.tags_list.setStyleSheet("background: transparent; border: none; outline: none; color: #94A3B8;")
+        self.tags_list.itemClicked.connect(self._on_tag_clicked)
+        sl.addWidget(self.tags_list, stretch=2)
+
+        # Tools / Import
+        sl.addSpacing(10)
+        sl.addWidget(self._section_label("IMPORT & TOOLS"))
+        
+        self.upload_btn = self._build_nav_btn("Local Import", "folder")
+        self.upload_btn.clicked.connect(self.show_upload.emit)
+        sl.addWidget(self.upload_btn)
+        
+        self.danbooru_btn = self._build_nav_btn("Danbooru", "search")
+        self.danbooru_btn.clicked.connect(self.show_danbooru.emit)
+        sl.addWidget(self.danbooru_btn)
+
+        # Settings
+        sl.addStretch()
+        settings_btn = self._build_nav_btn("Settings & About", "settings")
+        settings_btn.clicked.connect(self._open_settings)
+        sl.addWidget(settings_btn)
+
+        return sidebar
+
+    def _build_top_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(64)
+        bar.setStyleSheet("background-color: #0F172A; border-bottom: 1px solid #1E293B;")
+        
+        tl = QHBoxLayout(bar)
+        tl.setContentsMargins(20, 0, 20, 0)
+        
+        # Breadcrumb / Filter Status
+        self.breadcrumb_label = QLabel("All images")
+        self.breadcrumb_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #F1F5F9;")
+        tl.addWidget(self.breadcrumb_label)
+        
+        tl.addStretch()
+
+        # Search Bar
+        search_wrap = QFrame()
+        search_wrap.setObjectName("searchContainer")
+        search_wrap.setFixedWidth(320)
+        search_wrap.setFixedHeight(36)
+        search_layout = QHBoxLayout(search_wrap)
+        search_layout.setContentsMargins(12, 0, 12, 0)
+        search_layout.setSpacing(8)
+        
+        # Modern glassmorphism/flat style for search bar
+        search_wrap.setStyleSheet("""
+            QFrame#searchContainer {
+                background-color: #1E293B;
+                border: 1px solid #334155;
+                border-radius: 18px;
+            }
+            QFrame#searchContainer:focus-within {
+                background-color: #0F172A;
+                border: 1px solid #8B5CF6;
+            }
+        """)
+        
+        search_icon = QLabel()
+        search_icon.setPixmap(QIcon(icon_path("search")).pixmap(QSize(16, 16)))
+        search_icon.setStyleSheet("background: transparent;")
+        search_layout.addWidget(search_icon)
+        
+        self.search_entry = QLineEdit()
+        self.search_entry.setPlaceholderText("Search your library...")
+        self.search_entry.setStyleSheet("""
+            QLineEdit {
+                background: transparent;
+                border: none;
+                color: #F1F5F9;
+                font-size: 13px;
+                padding-bottom: 1px; /* Align text better vertically */
+            }
+        """)
+        self.search_entry.returnPressed.connect(self._on_search)
+        search_layout.addWidget(self.search_entry)
+        
+        tl.addWidget(search_wrap)
+        tl.addSpacing(20)
+
+        # Sorting
+        tl.addWidget(QLabel("Sort:"))
+        self.sort_combo = QComboBox()
+        self.sort_combo.setFixedWidth(140)
+        
+        # Human-readable labels
+        options = {
+            "date_added_desc": "Newest first",
+            "date_added_asc": "Oldest first",
+            "name_asc": "Name (A-Z)",
+            "name_desc": "Name (Z-A)",
+            "last_viewed_desc": "Recently viewed",
+            "favorite_first": "Favorites first"
+        }
+        for key, label in options.items():
+            self.sort_combo.addItem(label, key)
+            
+        self.sort_combo.setCurrentIndex(0) # Default to newest
+        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        tl.addWidget(self.sort_combo)
+        
+        # View Controls
+        tl.addSpacing(10)
+        self.column_slider = QSlider(Qt.Horizontal)
+        self.column_slider.setRange(2, 8)
+        self.column_slider.setValue(self.columns)
+        self.column_slider.setFixedWidth(80)
+        self.column_slider.valueChanged.connect(self._set_columns)
+        tl.addWidget(QLabel("\u25A6"))
+        tl.addWidget(self.column_slider)
+        
+        # Safe Mode Toggle
+        self.safe_mode_btn = QPushButton("Safe: ON")
+        self.safe_mode_btn.setCheckable(True)
+        self.safe_mode_btn.setChecked(get_settings().get_safe_mode())
+        self.safe_mode_btn.clicked.connect(self._toggle_safe_mode)
+        self._update_safe_mode_btn_style()
+        tl.addWidget(self.safe_mode_btn)
+
+        return bar
+
+    def _build_detail_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setFixedWidth(300)
+        panel.setStyleSheet("background-color: #0F172A; border-left: 1px solid #1E293B;")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
+
+        # Title
+        self.detail_title = QLabel("Selection Details")
+        self.detail_title.setStyleSheet("color: #F1F5F9; font-size: 18px; font-weight: bold;")
+        self.detail_title.setWordWrap(True)
+        layout.addWidget(self.detail_title)
+
+        # Path Section
+        path_box = QVBoxLayout()
+        path_box.setSpacing(4)
+        path_hdr = QLabel("FILE PATH")
+        path_hdr.setStyleSheet("color: #475569; font-size: 10px; font-weight: 800; letter-spacing: 1px;")
+        path_box.addWidget(path_hdr)
+        self.detail_path = ElidedLabel("None")
+        self.detail_path.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        path_box.addWidget(self.detail_path)
+        layout.addLayout(path_box)
+
+        # AI Status Section
+        status_box = QVBoxLayout()
+        status_box.setSpacing(4)
+        status_hdr = QLabel("AI SCAN STATUS")
+        status_hdr.setStyleSheet("color: #475569; font-size: 10px; font-weight: 800; letter-spacing: 1px;")
+        status_box.addWidget(status_hdr)
+        self.detail_ai_status = QLabel("N/A")
+        self.detail_ai_status.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        status_box.addWidget(self.detail_ai_status)
+        layout.addLayout(status_box)
+
+        # Tags Section
+        tags_box = QVBoxLayout()
+        tags_box.setSpacing(8)
+        tags_hdr = QLabel("TAGS")
+        tags_hdr.setStyleSheet("color: #475569; font-size: 10px; font-weight: 800; letter-spacing: 1px;")
+        tags_box.addWidget(tags_hdr)
+        
+        self.detail_tags_list = QListWidget()
+        self.detail_tags_list.setFlow(QListWidget.LeftToRight)
+        self.detail_tags_list.setWrapping(True)
+        self.detail_tags_list.setResizeMode(QListWidget.Adjust)
+        self.detail_tags_list.setSpacing(6)
+        self.detail_tags_list.setStyleSheet("""
+            QListWidget { background: transparent; border: none; outline: none; }
+            QListWidget::item { 
+                background-color: #1E293B; color: #E2E8F0; 
+                border-radius: 12px; padding: 4px 10px; font-size: 11px;
+            }
+        """)
+        tags_box.addWidget(self.detail_tags_list)
+        layout.addLayout(tags_box)
+
+        layout.addStretch()
+        return panel
+
+    def _build_nav_btn(self, text: str, icon_name: str) -> QPushButton:
+        btn = QPushButton(f"  {text}")
+        btn.setCheckable(True)
+        icon = QIcon(icon_path(icon_name))
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(18, 18))
+        btn.setStyleSheet("""
+            QPushButton {
+                text-align: left; padding: 10px 12px; border-radius: 8px;
+                color: #94A3B8; font-weight: 500; background: transparent;
+                border: 1px solid transparent;
+            }
+            QPushButton:hover { background-color: #1E293B; color: #F1F5F9; }
+            QPushButton:checked { 
+                background-color: #312E81; 
+                color: #E2E8F0; 
+                border: 1px solid #4F46E5;
+            }
+        """)
+        return btn
+
+    def _section_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: bold; padding: 8px 0 2px 0;")
+        lbl.setStyleSheet("color: #475569; font-size: 10px; font-weight: 800; letter-spacing: 1px; padding: 10px 0 2px 0;")
         return lbl
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def focus_image(self, image_id: int) -> None:
-        """Navigate gallery to show and select an image by database id."""
-        path = self.image_mgr.get_file_path_by_id(image_id)
-        if not path:
-            return
-        self._clear_filter_state()
-        self._active_filter = "all"
-        self.collections_list.clearSelection()
-        self.tags_list.clearSelection()
-        self.smart_collections_list.clearSelection()
-        self.current_page = self.image_mgr.get_page_for_image(
-            image_id,
-            self._ITEMS_PER_PAGE,
-            sort_by=self.sort_by,
-        )
-        self.selected_images = {path}
-        self._pending_focus_path = path
-        self._detail_image_id = image_id
-        self.load_gallery()
-
-    def _on_sort_changed(self) -> None:
-        self.sort_by = self.sort_combo.currentData()
-        get_settings().set_gallery_sort(self.sort_by)
-        self.current_page = 1
-        self.load_gallery()
+    def _update_safe_mode_btn_style(self) -> None:
+        active = self.safe_mode_btn.isChecked()
+        self.safe_mode_btn.setText(f"Safe: {'ON' if active else 'OFF'}")
+        color = "#10B981" if active else "#EF4444"
+        self.safe_mode_btn.setStyleSheet(f"color: {color}; border: 1px solid {color}; padding: 4px; border-radius: 4px;")
 
     def load_gallery(self) -> None:
-        """Clear the grid and start background image loading."""
-        # Remove every item from the grid layout and destroy its widget.
-        # Simply calling deleteLater() on tracked cards is not enough — the
-        # QGridLayout holds its own references, causing stale widgets to
-        # overlap new cards when the column count or page changes.
-        while self.gallery_grid.count():
-            item = self.gallery_grid.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-        self._cards.clear()
-        self.path_to_id.clear()
+        """Fetch and render images."""
+        try:
+            while self.gallery_grid.count():
+                item = self.gallery_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._cards.clear()
+            self.path_to_id.clear()
 
-        total_items = self.image_mgr.count_images(
-            collection_id=self.current_collection_id,
-            tag_ids=self.filter_tag_ids,
-            search_term=self.current_search_term,
-            only_favorites=self.only_favorites,
-            only_recent=self.only_recent,
-        )
-        self.total_items = total_items
-        self.total_pages = max(1, math.ceil(total_items / self._ITEMS_PER_PAGE))
-        if self.current_page > self.total_pages:
-            self.current_page = self.total_pages
-        self._update_pagination_state()
-        self._update_breadcrumb()
+            total = self.image_mgr.count_images(
+                collection_id=self.current_collection_id,
+                tag_ids=self.current_tag_id,
+                search_term=self.current_search,
+                only_favorites=self.only_favorites,
+                only_recent=self.only_recent
+            )
+            self.total_items = total
+            if hasattr(self._load_status, "label"):
+                self._load_status.label.setText(f"{total} images")
+            
+            ipp = get_settings().get_items_per_page()
+            max_page = math.ceil(total / ipp) if total > 0 else 1
+            if self.current_page > max_page: self.current_page = max_page
+            if self.current_page < 1: self.current_page = 1
+            
+            self.page_info_lbl.setText(f"Page {self.current_page} of {max_page}")
+            self.prev_page_btn.setEnabled(self.current_page > 1)
+            self.next_page_btn.setEnabled(self.current_page < max_page)
+            
+            # Update Overall Library Stats
+            all_images_count = self.image_mgr.count_images()
+            self.db_stats_badge.setText(f"💎 {all_images_count:,} IMAGES IN LIBRARY")
 
-        images = self.image_mgr.query_images(
-            collection_id=self.current_collection_id,
-            tag_ids=self.filter_tag_ids,
-            search_term=self.current_search_term,
-            only_favorites=self.only_favorites,
-            only_recent=self.only_recent,
-            limit=self._ITEMS_PER_PAGE,
-            offset=(self.current_page - 1) * self._ITEMS_PER_PAGE,
-            sort_by=self.sort_by,
-        )
+            self._update_breadcrumb()
 
-        if not images:
-            self._load_queue.cancel_all()
-            self._load_status.hide_idle()
-            self._show_empty_state()
-            self._refresh_bulk_tag_button()
-            return
-
-        self._load_queue.cancel_all()
-        self._load_generation = self._load_queue.generation
-        self._render_cards_skeleton(images)
-        total = len(images)
-        self._load_status.show_busy(f"Loading previews… 0/{total}", total=total)
-        for data in images:
-            path = data["file_path"]
-            self._load_queue.enqueue_file(
-                path,
-                path,
-                data.get("thumbnail_path"),
-                max_size=(220, 220),
-                preview_only=True,
+            images = self.image_mgr.query_images(
+                collection_id=self.current_collection_id,
+                tag_ids=self.current_tag_id,
+                search_term=self.current_search,
+                only_favorites=self.only_favorites,
+                only_recent=self.only_recent,
+                limit=ipp,
+                offset=(self.current_page - 1) * ipp,
+                sort_by=self.sort_by
             )
 
-    def _update_pagination_state(self) -> None:
-        self.page_label.setText(f"Page {self.current_page} / {self.total_pages}")
-        self.result_count_label.setText(
-            f"{self.total_items} image{'s' if self.total_items != 1 else ''}"
-        )
-        self.prev_page_btn.setEnabled(self.current_page > 1)
-        self.next_page_btn.setEnabled(self.current_page < self.total_pages)
+            row, col = 0, 0
+            vw = self.gallery_scroll.viewport().width()
+            overhead = 20 + (20 * self.columns)
+            size = (vw - overhead) // self.columns if vw > 100 else 220
+            
+            self._ordered_paths = []
+            for i, data in enumerate(images):
+                path = data["file_path"]
+                self._ordered_paths.append(path)
+                self.path_to_id[path] = data["id"]
+                
+                card = ImageCard(path, bool(data.get("is_favorite")), not Path(path).exists(), size)
+                card.set_selected(path in self.selected_images)
+                card.set_ai_status(data.get("ai_status", "pending"))
+                card._is_sensitive = bool(data.get("is_sensitive", 0))
+                card._update_safety_visuals()
+                
+                card.clicked.connect(lambda ev, p=path, c=card: self._on_card_clicked(p, c, ev))
+                card.double_clicked.connect(lambda idx=i: self._open_image_viewer(idx))
+                card.right_clicked.connect(lambda pos, p=path: self._show_context_menu(pos, p))
 
-    def _show_empty_state(self) -> None:
-        box = QWidget()
-        v = QVBoxLayout(box)
-        v.setAlignment(Qt.AlignCenter)
-        if self.total_items == 0 and not self._has_active_filters():
-            title = QLabel("Import your first references")
-            title.setStyleSheet("font-size: 18px; font-weight: bold; color: #E2E8F0;")
-            sub = QLabel("Drag images into Upload or browse your folders.")
-            sub.setStyleSheet("color: #94A3B8;")
-            upload_btn = QPushButton("Upload images")
-            upload_btn.setStyleSheet("background-color: #7C3AED; border-color: #6D28D9;")
-            upload_btn.clicked.connect(self.show_upload.emit)
-            v.addWidget(title)
-            v.addWidget(sub)
-            v.addWidget(upload_btn, alignment=Qt.AlignCenter)
-        else:
-            term = self.current_search_term or ""
-            if term:
-                title = QLabel(f"No matches for \"{term}\"")
-            else:
-                title = QLabel("No images match this filter")
-            title.setStyleSheet("font-size: 16px; color: #E2E8F0;")
-            clear_btn = QPushButton("Clear filters")
-            clear_btn.clicked.connect(self.reset_filters)
-            v.addWidget(title)
-            v.addWidget(clear_btn, alignment=Qt.AlignCenter)
-        self.gallery_grid.addWidget(box, 0, 0, 1, max(self.columns, 1))
-        self._update_pagination_state()
+                self._cards[path] = card
+                self.gallery_grid.addWidget(card, row, col)
+                col += 1
+                if col >= self.columns:
+                    col, row = 0, row + 1
+                
+                self._load_queue.enqueue_file(path, path, data.get("thumbnail_path"), (size, size))
 
-    def _has_active_filters(self) -> bool:
-        return bool(
-            self.current_collection_id
-            or self.filter_tag_ids
-            or self.current_search_term
-            or self.only_favorites
-            or self.only_recent
-        )
+            self._refresh_sidebar_data()
+        except Exception as e:
+            logger.error(f"Failed to load gallery: {e}")
+
+    def _refresh_sidebar_data(self) -> None:
+        try:
+            self.collections_list.clear()
+            for c in self.col_mgr.get_collections():
+                i = QListWidgetItem(c['name'])
+                i.setData(Qt.UserRole, c['id'])
+                self.collections_list.addItem(i)
+            
+            self.smart_collections_list.clear()
+            def add_sc(name, tag_names):
+                tags = self.tag_mgr.get_tags()
+                ids = [t['id'] for t in tags if t['name'] in tag_names]
+                if ids:
+                    i = QListWidgetItem(name)
+                    i.setData(Qt.UserRole, ids)
+                    self.smart_collections_list.addItem(i)
+            
+            add_sc("\u2642 Male Poses", ["Male", "Boy", "Man"])
+            add_sc("\u2640 Female Poses", ["Female", "Girl", "Woman"])
+            add_sc("\u2601 Backgrounds", ["Background", "Scenery", "Nature"])
+            add_sc("\u2694 Action", ["Action", "Fighting", "Running", "Jump"])
+            
+            self.tags_list.clear()
+            for t in self.tag_mgr.get_popular_tags(15):
+                i = QListWidgetItem(f"#{t['name']}")
+                i.setData(Qt.UserRole, [t['id']])
+                self.tags_list.addItem(i)
+        except Exception as e:
+            logger.error(f"Failed to refresh sidebar: {e}")
 
     def _update_breadcrumb(self) -> None:
-        if self.only_favorites:
-            text = "Favorites"
-        elif self.only_recent:
-            text = "Recently viewed"
-        elif self.current_collection_id and self._filter_collection_name:
-            text = f"Collection: {self._filter_collection_name}"
-        elif self.filter_tag_ids and self._filter_tag_name:
-            text = f"Tag: {self._filter_tag_name}"
-        elif self.current_search_term:
-            text = f"Search: {self.current_search_term}"
+        parts = []
+        if self.only_favorites: parts.append("Favorites")
+        elif self.only_recent: parts.append("Recent")
+        else: parts.append("All images")
+        
+        if self.current_collection_id:
+            parts.append("Collection")
+        if self.current_tag_id:
+            parts.append("Filtered")
+        if self.current_search:
+            parts.append(f'"{self.current_search}"')
+            
+        self.breadcrumb_label.setText(" \u203a ".join(parts))
+
+    def _on_thumbnail_ready(self, path: str, pixmap: QPixmap, gen: int) -> None:
+        if path in self._cards:
+            self._cards[path].set_pixmap(pixmap)
+
+    def set_ai_scan_progress(self, current: int, total: int, image_id: int = None, status: str = 'scanning') -> None:
+        if total > 0:
+            percent = int((current / total) * 100)
+            self._load_status.set_progress(current, total, f"AI Scanning\u2026 {percent}%")
+            if image_id is not None:
+                target_id = int(image_id)
+                for p, mid in self.path_to_id.items():
+                    if int(mid) == target_id and p in self._cards:
+                        card = self._cards[p]
+                        card.set_ai_status(status)
+                        if status == 'scanning':
+                            self.gallery_scroll.ensureWidgetVisible(card)
+            if current >= total and status == 'idle':
+                QTimer.singleShot(2000, self._load_status.hide_idle)
         else:
-            text = "All images"
-        self.breadcrumb_label.setText(text)
-        self.clear_filters_btn.setVisible(self._has_active_filters())
-        self._update_active_nav()
+            self._load_status.hide_idle()
 
-    def _update_active_nav(self) -> None:
-        for key, btn in self._nav_buttons.items():
-            active = (
-                (key == "all" and self._active_filter == "all")
-                or (key == "favorites" and self._active_filter == "favorites")
-                or (key == "recent" and self._active_filter == "recent")
-            )
-            btn.setProperty("activeFilter", "true" if active else "false")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-
-    # ------------------------------------------------------------------
-    # Filtering
-    # ------------------------------------------------------------------
-
-    def reset_filters(self) -> None:
-        self._stop_search_debounce()
-        self.current_collection_id = None
-        self.filter_tag_ids        = None
-        self.current_search_term   = None
-        self.only_favorites        = False
-        self.only_recent           = False
-        self._active_filter        = "all"
-        self._filter_collection_name = None
-        self._filter_tag_name      = None
-        self.current_page          = 1
-        self.collections_list.clearSelection()
-        self.tags_list.clearSelection()
-        self.smart_collections_list.clearSelection()
-        self.search_entry.blockSignals(True)
-        self.search_entry.clear()
-        self.search_entry.blockSignals(False)
-        self.load_gallery()
-
-    def set_favorites_filter(self) -> None:
-        self._stop_search_debounce()
-        self._clear_filter_state()
-        self.only_favorites = True
-        self._active_filter = "favorites"
-        self.load_gallery()
-
-    def set_recent_filter(self) -> None:
-        self._stop_search_debounce()
-        self._clear_filter_state()
-        self.only_recent = True
-        self._active_filter = "recent"
-        self.load_gallery()
-
-    def _clear_filter_state(self) -> None:
-        self.current_collection_id = None
-        self.filter_tag_ids = None
-        self.current_search_term = None
-        self.only_favorites = False
-        self.only_recent = False
-        self._filter_collection_name = None
-        self._filter_tag_name = None
+    def reset_filters(self, reload=True):
+        self.current_tag_id = self.current_collection_id = self.current_search = None
+        self.only_favorites = self.only_recent = False
         self.current_page = 1
-        self.search_entry.blockSignals(True)
-        self.search_entry.clear()
-        self.search_entry.blockSignals(False)
+        if hasattr(self, "search_entry"):
+            self.search_entry.clear()
+        if hasattr(self, "all_btn"):
+            self.all_btn.setChecked(True)
+        if reload:
+            self.load_gallery()
 
-    def _stop_search_debounce(self) -> None:
-        self._search_timer.stop()
-
-    def _sync_active_filter_from_state(self) -> None:
-        if self.only_favorites:
-            self._active_filter = "favorites"
-        elif self.only_recent:
-            self._active_filter = "recent"
-        elif self.current_collection_id is not None:
-            self._active_filter = "collection"
-        elif self.filter_tag_ids:
-            if self._active_filter != "smart":
-                self._active_filter = "tag"
-        elif self.current_search_term:
-            self._active_filter = "search"
-        else:
-            self._active_filter = "all"
-
-    def _on_collection_clicked(self, item: QListWidgetItem) -> None:
-        self._stop_search_debounce()
-        cid = item.data(Qt.UserRole)
-        self._clear_filter_state()
-        self.current_collection_id = cid
-        self._filter_collection_name = re.sub(r"\s*\(\d+\)\s*$", "", item.text().strip())
-        self._active_filter = "collection"
+    def set_favorites_filter(self):
+        self.only_favorites = True
+        self.only_recent = False
+        self.current_page = 1
         self.load_gallery()
 
-    def _on_tag_clicked(self, item: QListWidgetItem) -> None:
-        self._stop_search_debounce()
-        tid = item.data(Qt.UserRole)
-        self._clear_filter_state()
-        self.filter_tag_ids = tid
-        self._filter_tag_name = re.sub(r"\s*\(\d+\)\s*$", "", item.text().strip())
-        self._active_filter = "tag"
+    def set_recent_filter(self):
+        self.only_favorites = False
+        self.only_recent = True
+        self.current_page = 1
         self.load_gallery()
 
-    def set_collection(self, cid) -> None:
-        self._stop_search_debounce()
-        self._clear_filter_state()
-        self.current_collection_id = cid
-        self._active_filter = "collection"
+    def _on_collection_clicked(self, item):
+        self.current_collection_id = item.data(Qt.UserRole)
+        self.current_tag_id = None
+        self.current_page = 1
         self.load_gallery()
 
-    def set_tag(self, tid) -> None:
-        self._stop_search_debounce()
-        self._clear_filter_state()
-        self.filter_tag_ids = tid
-        self._active_filter = "tag"
+    def _on_tag_clicked(self, item):
+        self.current_tag_id = item.data(Qt.UserRole)
+        self.current_collection_id = None
+        self.current_page = 1
         self.load_gallery()
 
     def set_smart_collection(self, item: QListWidgetItem) -> None:
-        self._stop_search_debounce()
-        tag_ids = item.data(Qt.UserRole)
-        self._clear_filter_state()
-        self.filter_tag_ids = tag_ids
-        self._filter_tag_name = re.sub(r"\s*\(\d+\)\s*$", "", item.text().strip())
-        self._active_filter = "smart"
-        self.load_gallery()
-
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-
-    def _on_search(self) -> None:
-        self._search_timer.stop()
-        self._on_search_debounced()
-        self._autocomplete_menu.hide()
-
-    def _on_search_debounced(self) -> None:
-        term = self.search_entry.text().strip()
+        # Extract data before load_gallery potentially refreshes the list and deletes the item
+        tag_id = item.data(Qt.UserRole)
+        self.current_tag_id = tag_id
+        self.current_collection_id = None
         self.current_page = 1
-        if term:
-            self._clear_filter_state()
-            self.current_search_term = term
-            get_settings().add_recent_search(term)
-            self._active_filter = "search"
-        else:
-            self.current_search_term = None
-            self._sync_active_filter_from_state()
         self.load_gallery()
 
-    def _on_search_changed(self, text: str) -> None:
-        self._search_timer.stop()
-        self._search_timer.start()
-        term = text.strip()
-        if len(term) < 2:
-            self._autocomplete_menu.hide()
-            return
-        tags = self.tag_mgr.get_tags()
-        matches = [t['name'] for t in tags if term.lower() in t['name'].lower()][:5]
-        self._autocomplete_menu.clear()
-        for name in matches:
-            self._autocomplete_menu.addAction(name).triggered.connect(
-                lambda _, n=name: self._apply_autocomplete(n))
-        if matches:
-            self._autocomplete_menu.popup(
-                self.search_entry.mapToGlobal(self.search_entry.rect().bottomLeft()))
-        else:
-            self._autocomplete_menu.hide()
+    def _on_search(self):
+        self.current_search = self.search_entry.text().strip()
+        self.current_page = 1
+        self.load_gallery()
 
-    def _apply_autocomplete(self, text: str) -> None:
-        self.search_entry.setText(text)
-        self._autocomplete_menu.hide()
-        self._on_search()
+    def _on_sort_changed(self):
+        self.sort_by = self.sort_combo.currentData()
+        self.current_page = 1
+        self.load_gallery()
 
-    # ------------------------------------------------------------------
-    # Columns / pagination
-    # ------------------------------------------------------------------
-
-    def _set_columns(self, val: int) -> None:
+    def _set_columns(self, val):
         self.columns = val
-        get_settings().set_columns(val)
         self.load_gallery()
 
-    def _prev_page(self) -> None:
-        if self.current_page > 1:
-            self.current_page -= 1
-            self.load_gallery()
-
-    def _next_page(self) -> None:
-        if self.current_page < self.total_pages:
-            self.current_page += 1
-            self.load_gallery()
-
-    # ------------------------------------------------------------------
-    # Rendering
-    # ------------------------------------------------------------------
-
-    def _render_cards_skeleton(self, images: list) -> None:
-        row, col = 0, 0
-        self._ordered_paths = []
-        for data in images:
-            path = data["file_path"]
-            self._ordered_paths.append(path)
-            self.path_to_id[path] = data["id"]
-
-            missing = not Path(path).exists()
-            card = ImageCard(path, is_favorite=bool(data.get("is_favorite")), missing=missing)
-            card.set_selected(path in self.selected_images)
-            if not missing:
-                card.set_loading(True)
+    def _on_card_clicked(self, path, card, event): 
+        from PyQt5.QtWidgets import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        
+        if modifiers & Qt.ShiftModifier and hasattr(self, "_last_selected_path") and self._last_selected_path:
+            # Shift+Click: Select range
+            self._range_select(self._last_selected_path, path)
+        elif modifiers & Qt.ControlModifier:
+            # Ctrl+Click: Toggle selection
+            if path in self.selected_images:
+                self.selected_images.remove(path)
+                card.set_selected(False)
             else:
-                card.set_load_failed()
-
-            card.clicked.connect(lambda ev, p=path, c=card: self._on_card_clicked(p, c, ev))
-            card.double_clicked.connect(
-                lambda p=path: self.switch_to_workspace.emit([p], True))
-            card.right_clicked.connect(lambda pos, p=path: self._show_context_menu(pos, p))
-
-            self._cards[path] = card
-            self.gallery_grid.addWidget(card, row, col)
-            col += 1
-            if col >= self.columns:
-                col, row = 0, row + 1
-
-        self._update_pagination_state()
-        self._refresh_bulk_tag_button()
-        self._finish_gallery_focus()
-
-    def _on_thumbnail_ready(self, path: str, pixmap: object, generation: int) -> None:
-        if generation != self._load_generation:
-            return
-        card = self._cards.get(path)
-        if not card:
-            return
-        if pixmap:
-            card.set_pixmap(pixmap)
+                self.selected_images.add(path)
+                card.set_selected(True)
         else:
-            card.set_load_failed()
+            # Normal click: Select single
+            for c in self._cards.values():
+                c.set_selected(False)
+            self.selected_images = {path}
+            card.set_selected(True)
+        
+        self._last_selected_path = path
+        
+        if len(self.selected_images) > 1:
+            self._update_multi_detail_panel()
+        else:
+            self._update_detail_panel(self.path_to_id.get(path))
 
-    def _on_load_progress(self, done: int, total: int, generation: int) -> None:
-        if generation != self._load_generation:
+    def _range_select(self, start_path: str, end_path: str):
+        if start_path not in self._ordered_paths or end_path not in self._ordered_paths:
             return
-        self._load_status.set_progress(
-            done, total, f"Loading previews… {done}/{total}",
-        )
+        idx1 = self._ordered_paths.index(start_path)
+        idx2 = self._ordered_paths.index(end_path)
+        low, high = min(idx1, idx2), max(idx1, idx2)
+        new_selection = set(self._ordered_paths[low:high+1])
+        self.selected_images.update(new_selection)
+        for p in new_selection:
+            if p in self._cards:
+                self._cards[p].set_selected(True)
 
-    def _on_load_queue_empty(self, generation: int) -> None:
-        if generation != self._load_generation:
-            return
-        self._load_status.hide_idle()
-        mw = self._main_window()
-        if mw:
-            mw.show_status("Gallery previews loaded", 3000)
-
-    def _finish_gallery_focus(self) -> None:
-        if self._pending_focus_path and self._pending_focus_path in self._cards:
-            card = self._cards[self._pending_focus_path]
-            self.gallery_scroll.ensureWidgetVisible(card)
-            self._pending_focus_path = None
-        if self._detail_image_id:
-            self._update_detail_panel(self._detail_image_id)
+    def _update_multi_detail_panel(self) -> None:
+        count = len(self.selected_images)
+        self.detail_title.setText(f"{count} Images Selected")
+        self.detail_path.setText("Multiple items...")
+        self.detail_ai_status.setText("N/A")
+        self.detail_tags_list.clear()
+        item = QListWidgetItem("Use right-click for bulk actions")
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+        self.detail_tags_list.addItem(item)
 
     def _update_detail_panel(self, image_id: int) -> None:
-        detail = self.image_mgr.get_image_detail(image_id)
-        if not detail:
-            self.detail_panel.setText("Image not found.")
+        if not image_id:
+            self.detail_title.setText("Selection Details")
+            self.detail_path.setText("None")
+            self.detail_ai_status.setText("N/A")
+            self.detail_tags_list.clear()
             return
-        tags = self.tag_mgr.get_tags_for_image(image_id)
-        tag_text = ", ".join(t["name"] for t in tags) if tags else "—"
-        cols = self.collection_mgr.get_collections_for_image(image_id)
-        col_text = ", ".join(c["name"] for c in cols) if cols else "—"
-        path = detail["file_path"]
-        exists = Path(path).exists()
-        lines = [
-            f"<b>{Path(path).name}</b>",
-            f"Size: {detail.get('width', '?')} × {detail.get('height', '?')}",
-            f"Favorite: {'Yes' if detail.get('is_favorite') else 'No'}",
-            f"Added: {detail.get('date_added', '—')}",
-            f"Last viewed: {detail.get('last_viewed') or '—'}",
-            f"Tags: {tag_text}",
-            f"Collections: {col_text}",
-            f"File: {'Missing on disk' if not exists else path}",
-        ]
-        self.detail_panel.setText("<br>".join(lines))
-
-    def keyPressEvent(self, event) -> None:
-        if not self._ordered_paths:
-            super().keyPressEvent(event)
-            return
-        key = event.key()
-        if key not in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
-            super().keyPressEvent(event)
-            return
-        current = next(iter(self.selected_images), None) if len(self.selected_images) == 1 else None
-        if current not in self._ordered_paths:
-            idx = 0
-        else:
-            idx = self._ordered_paths.index(current)
-        step = 1 if key in (Qt.Key_Right, Qt.Key_Down) else -1
-        if key in (Qt.Key_Up, Qt.Key_Down):
-            step *= self.columns
-        idx = max(0, min(len(self._ordered_paths) - 1, idx + step))
-        path = self._ordered_paths[idx]
-        self.selected_images = {path}
-        for p, c in self._cards.items():
-            c.set_selected(p == path)
-        self._last_clicked_path = path
-        self._detail_image_id = self.path_to_id.get(path)
-        if self._detail_image_id:
-            self._update_detail_panel(self._detail_image_id)
-        if path in self._cards:
-            self.gallery_scroll.ensureWidgetVisible(self._cards[path])
-        self._refresh_bulk_tag_button()
-
-    # ------------------------------------------------------------------
-    # Selection
-    # ------------------------------------------------------------------
-
-    def _on_card_clicked(self, path: str, card: ImageCard, event) -> None:
-        modifiers = event.modifiers()
-        if modifiers & Qt.ShiftModifier and self._last_clicked_path:
-            self._range_select(self._last_clicked_path, path)
-        elif modifiers & (Qt.ControlModifier | Qt.MetaModifier):
-            self._toggle_selection(path, card)
-        else:
-            self._toggle_selection(path, card)
-        self._last_clicked_path = path
-        self._detail_image_id = self.path_to_id.get(path)
-        if self._detail_image_id:
-            self._update_detail_panel(self._detail_image_id)
-        self._refresh_bulk_tag_button()
-
-    def _range_select(self, anchor: str, target: str) -> None:
-        if anchor not in self._ordered_paths or target not in self._ordered_paths:
-            return
-        i1 = self._ordered_paths.index(anchor)
-        i2 = self._ordered_paths.index(target)
-        lo, hi = min(i1, i2), max(i1, i2)
-        self.selected_images = set(self._ordered_paths[lo : hi + 1])
-        for p, c in self._cards.items():
-            c.set_selected(p in self.selected_images)
-        self._refresh_bulk_tag_button()
-
-    def _toggle_selection(self, path: str, card: ImageCard) -> None:
-        if path in self.selected_images:
-            self.selected_images.discard(path)
-        else:
-            self.selected_images.add(path)
-        for p, c in self._cards.items():
-            c.set_selected(p in self.selected_images)
-        self._refresh_bulk_tag_button()
-
-    def _refresh_bulk_tag_button(self) -> None:
-        n = len(self.selected_images)
-        self.bulk_tag_btn.setEnabled(bool(n))
-        self.bulk_tag_btn.setText(f"Retag ({n})" if n else "Retag Selected")
-        self.ws_open_btn.setEnabled(bool(n))
-
-    def _clear_selection(self) -> None:
-        if not self.selected_images:
-            return
-        self.selected_images.clear()
-        self._last_clicked_path = None
-        for card in self._cards.values():
-            card.set_selected(False)
-        self._refresh_bulk_tag_button()
-
-    # ------------------------------------------------------------------
-    # Context menu
-    # ------------------------------------------------------------------
-
-    def _show_context_menu(self, pos: QPoint, file_path: str) -> None:
-        targets = set(self.selected_images) | {file_path}
-
-        menu = QMenu(self)
-
-        col_menu = menu.addMenu("Add to Collection")
-        for c in self.collection_mgr.get_collections():
-            col_menu.addAction(c['name']).triggered.connect(
-                lambda _, cid=c['id']: self._add_to_collection(targets, cid))
-
-        if self.current_collection_id:
-            menu.addAction("Remove from this Collection").triggered.connect(
-                lambda: self._remove_from_collection(targets))
-
-        menu.addAction("🏷 Edit Tags").triggered.connect(
-            lambda: self._show_tag_dialog(targets))
-        menu.addAction("★ Toggle Favorite").triggered.connect(
-            lambda: self._toggle_favorites(targets))
-        if self.selected_images:
-            menu.addAction("Unselect all").triggered.connect(self._clear_selection)
-        menu.addSeparator()
-        menu.addAction("▶ Open in Workspace").triggered.connect(
-            lambda: self.switch_to_workspace.emit(list(targets), True))
-        menu.addAction("＋ Add to Workspace").triggered.connect(
-            lambda: self.switch_to_workspace.emit(list(targets), False))
-        import_menu = menu.addMenu("Import")
-        ws_menu = import_menu.addMenu("Workspace")
-        for slot in range(1, 6):
-            ws_menu.addAction(f"Slot {slot}").triggered.connect(
-                lambda _, s=slot, t=list(targets): self.import_to_workspace_slot.emit(t, s)
-            )
-        menu.addSeparator()
-        menu.addAction("🗑 Delete Image").triggered.connect(
-            lambda: self._delete_images(targets))
-
-        menu.popup(pos)
-
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
-    def _add_to_collection(self, paths: set, cid: int) -> None:
-        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if ids:
-            self.collection_mgr.add_images_to_collection(ids, cid)
-            mw = self._main_window()
-            if mw:
-                mw.show_toast(f"Added {len(ids)} image(s) to collection")
-
-    def _remove_from_collection(self, paths: set) -> None:
-        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if ids and self.current_collection_id:
-            self.collection_mgr.remove_images_from_collection(ids, self.current_collection_id)
-            self.load_gallery()
-
-    def _show_tag_dialog(self, paths: set) -> None:
-        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
-        if not ids:
-            return
-
-        def on_saved(count: int) -> None:
-            from database import rebuild_images_fts
-            rebuild_images_fts()
-            mw = self._main_window()
-            if mw:
-                mw.show_toast(f"Tags updated on {count} image(s)")
-            self.load_gallery()
-
-        TagEditDialog(self, self.tag_mgr, ids, on_saved=on_saved).exec_()
-
-    def _toggle_favorites(self, paths: set) -> None:
-        self.image_mgr.toggle_favorites(paths)
-        self.load_gallery()
-
-    def _delete_images(self, paths: set) -> None:
-        if QMessageBox.question(
-            self, "Confirm Delete",
-            f"Permanently delete {len(paths)} image(s) from library?",
-            QMessageBox.Yes | QMessageBox.No,
-        ) != QMessageBox.Yes:
-            return
-        for p in paths:
-            self.image_mgr.delete_image(p)
-        self.selected_images -= paths
-        self._refresh_bulk_tag_button()
-        self.load_gallery()
-
-    def _bulk_retag(self) -> None:
-        if self.selected_images:
-            self._show_tag_dialog(self.selected_images)
-
-    def _open_workspace(self) -> None:
-        self.switch_to_workspace.emit(list(self.selected_images), True)
-
-    def _add_to_workspace(self) -> None:
-        if not self.selected_images:
-            QMessageBox.warning(self, "Notice", "Select images first.")
-            return
-        self.switch_to_workspace.emit(list(self.selected_images), False)
-
-    def _open_detached_workspace(self) -> None:
-        self.show_detached_workspace.emit(list(self.selected_images), True)
-
-    def _open_settings(self) -> None:
-        from ui.settings_dialog import SettingsDialog
-        main = self._main_window()
-        SettingsDialog(main or self).exec_()
-
-    # ------------------------------------------------------------------
-    # Sidebar list refresh
-    # ------------------------------------------------------------------
-
-    def refresh_collections_list(self) -> None:
-        self.collections_list.clear()
-        counts = self.collection_mgr.get_collection_image_counts()
-        tree: dict = {}
-        roots = []
-        for c in self.collection_mgr.get_collections():
-            pid = c.get('parent_id')
-            if pid is None:
-                roots.append(c)
-            else:
-                tree.setdefault(pid, []).append(c)
-
-        def _add_node(node: dict, depth: int) -> None:
-            cnt = counts.get(node['id'], 0)
-            label = f"{'  ' * depth}{node['name']} ({cnt})"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, node['id'])
-            self.collections_list.addItem(item)
-            for child in tree.get(node['id'], []):
-                _add_node(child, depth + 1)
-
-        for r in roots:
-            _add_node(r, 0)
-
-    def _create_collection(self) -> None:
-        name, ok = QInputDialog.getText(
-            self, "New Collection", "Name (use / for sub-folders, e.g. People/Portraits):")
-        if not ok or not name:
-            return
-        parts = [p.strip() for p in name.strip('/').split('/') if p.strip()]
-        parent_id = None
-        for part in parts:
-            cols = self.collection_mgr.get_collections()
-            match = next((c for c in cols if c['name'] == part and c.get('parent_id') == parent_id), None)
-            if not match:
-                self.collection_mgr.create_collection(part, parent_id=parent_id)
-                cols = self.collection_mgr.get_collections()
-                match = next((c for c in cols if c['name'] == part and c.get('parent_id') == parent_id), None)
-            if match:
-                parent_id = match['id']
-        self.refresh_collections_list()
-
-    def refresh_smart_collections_list(self) -> None:
-        self.smart_collections_list.clear()
-        for sc in self.collection_mgr.get_smart_collections():
-            item = QListWidgetItem(sc['name'])
-            item.setData(Qt.UserRole, sc['tag_ids'])
-            self.smart_collections_list.addItem(item)
-
-    def _create_smart_collection(self) -> None:
-        name, ok = QInputDialog.getText(self, "New Smart Collection", "Name:")
-        if not ok or not name:
-            return
-        tags_str, ok2 = QInputDialog.getText(
-            self, "New Smart Collection", "Required tags (comma-separated):")
-        if not ok2 or not tags_str:
-            return
-        tag_names = [t.strip().lower() for t in tags_str.split(',') if t.strip()]
-        all_tags = self.tag_mgr.get_tags()
-        tag_ids = [t['id'] for t in all_tags if t['name'].lower() in tag_names]
-        if not tag_ids:
-            QMessageBox.warning(self, "Error", "None of the specified tags exist.")
-            return
-        if self.collection_mgr.create_smart_collection(name, tag_ids):
-            self.refresh_smart_collections_list()
-
-    def refresh_tags_list(self) -> None:
-        self.tags_list.clear()
-        conn_counts: dict[int, int] = {}
         try:
             from database import get_connection
             conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT tag_id, COUNT(*) AS cnt FROM image_tags GROUP BY tag_id")
-            conn_counts = {int(r["tag_id"]): int(r["cnt"]) for r in cur.fetchall()}
-            conn.close()
-        except Exception:
-            pass
-        for t in self.tag_mgr.get_tags():
-            cnt = conn_counts.get(t['id'], 0)
-            item = QListWidgetItem(f"{t['name']} ({cnt})")
-            item.setData(Qt.UserRole, t['id'])
-            self.tags_list.addItem(item)
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM images WHERE id = ?", (image_id,))
+            row = cursor.fetchone()
+            if not row:
+                self.detail_title.setText("Error")
+                self.detail_path.setText("Image data not found")
+                return
+            row_dict = dict(row)
+            self.detail_title.setText(Path(row_dict['file_path']).name)
+            self.detail_path.setText(row_dict['file_path'])
+            self.detail_ai_status.setText(row_dict.get('ai_status', 'pending').upper())
+            
+            self.detail_tags_list.clear()
+            tags = self.tag_mgr.get_tags_for_image(image_id)
+            if tags:
+                for t in tags:
+                    item = QListWidgetItem(t['name'])
+                    item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                    self.detail_tags_list.addItem(item)
+            else:
+                item = QListWidgetItem("No tags")
+                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                self.detail_tags_list.addItem(item)
+        except Exception as e:
+            logger.error(f"Failed to update detail panel: {e}")
 
-    def _create_tag(self) -> None:
-        name, ok = QInputDialog.getText(self, "New Tag", "Tag name:")
-        if ok and name and self.tag_mgr.create_tag(name):
-            self.refresh_tags_list()
+    def _show_context_menu(self, pos: QPoint, path: str) -> None:
+        # If the right-clicked item isn't selected, make it the only selection
+        if path not in self.selected_images:
+            for c in self._cards.values():
+                c.set_selected(False)
+            self.selected_images = {path}
+            if path in self._cards:
+                self._cards[path].set_selected(True)
+            self._update_detail_panel(self.path_to_id.get(path))
+            self._last_selected_path = path
+
+        paths = list(self.selected_images)
+        count = len(paths)
+        
+        menu = QMenu(self)
+        
+        # Primary Action
+        open_label = f"Open {'image' if count == 1 else f'{count} images'} in Workspace"
+        menu.addAction(open_label).triggered.connect(lambda: self.switch_to_workspace.emit(paths, True))
+        
+        # Submenu for specific slots
+        send_menu = menu.addMenu("Send to Workspace")
+        for i in range(1, 6):
+            action = send_menu.addAction(f"Slot {i}")
+            action.triggered.connect(lambda checked, s=i: self.import_to_workspace_slot.emit(paths, s))
+            
+        menu.addSeparator()
+        menu.addAction("✨ AI Analysis").triggered.connect(lambda: self._trigger_ai_scan(paths))
+        menu.addAction("Edit Tags...").triggered.connect(lambda: self._open_tag_editor(paths))
+        
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete from Library")
+        delete_action.triggered.connect(lambda: self._delete_selected_images(paths))
+        
+        menu.exec_(pos)
+
+    def _delete_selected_images(self, paths: list) -> None:
+        count = len(paths)
+        if QMessageBox.question(
+            self,
+            "Delete images?",
+            f"Are you sure you want to delete {count} image(s) from your library?\n\nThis will remove them from the database and delete the local files in your library folder.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+
+        success_count = 0
+        for p in paths:
+            if self.image_mgr.delete_image(p):
+                success_count += 1
+                if p in self.selected_images:
+                    self.selected_images.remove(p)
+
+        if self._toast:
+            self._toast(f"Deleted {success_count} image(s)")
+        
+        self.load_gallery()
+
+    def _trigger_ai_scan(self, paths: list) -> None:
+        data = []
+        for p in paths:
+            if p in self.path_to_id:
+                data.append((self.path_to_id[p], p))
+        
+        if data:
+            main = self.window()
+            if hasattr(main, "ai_manager"):
+                main.ai_manager.enqueue_images(data, priority=True)
+                if self._toast:
+                    self._toast(f"Enqueued {len(data)} images for AI Analysis")
+
+    def _open_tag_editor(self, paths: list) -> None:
+        ids = [self.path_to_id[p] for p in paths if p in self.path_to_id]
+        if ids:
+            dialog = TagEditDialog(self.window(), self.tag_mgr, ids, self.load_gallery)
+            dialog.exec_()
+
+    def _toggle_safe_mode(self): 
+        active = self.safe_mode_btn.isChecked()
+        get_settings().set_safe_mode(active)
+        self._update_safe_mode_btn_style()
+        for c in self._cards.values(): c._update_safety_visuals()
+
+    def _open_settings(self):
+        from ui.settings_dialog import SettingsDialog
+        SettingsDialog(self.window()).exec_()
+
+    def focus_image(self, image_id):
+        self.reset_filters()
+        self.load_gallery()
+
+    def _open_image_viewer(self, index: int) -> None:
+        """Open the full-screen lightbox viewer starting at the given index."""
+        if not self._ordered_paths:
+            return
+            
+        viewer = ImageViewer(self.window(), self._ordered_paths, index, self.image_mgr)
+        # Connect viewer signal to workspace action (adds without replacing)
+        viewer.add_to_workspace.connect(lambda p: self.switch_to_workspace.emit([p], False))
+        viewer.exec_()
+
+    def _update_card_sizes(self):
+        """Recalculate and update all visible card sizes to fit the current viewport."""
+        vw = self.gallery_scroll.viewport().width()
+        if vw < 100:
+            return
+            
+        # overhead = margins (20+20) + spacing ((cols-1)*20) = 20 + 20*cols
+        overhead = 20 + (20 * self.columns)
+        size = (vw - overhead) // self.columns
+        
+        for card in self._cards.values():
+            card.update_size(size)
+
+    def _prev_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.load_gallery()
+            self.gallery_scroll.verticalScrollBar().setValue(0)
+
+    def _next_page(self):
+        ipp = get_settings().get_items_per_page()
+        max_page = math.ceil(self.total_items / ipp)
+        if self.current_page < max_page:
+            self.current_page += 1
+            self.load_gallery()
+            self.gallery_scroll.verticalScrollBar().setValue(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Delay update slightly to ensure viewport width is settled
+        QTimer.singleShot(0, self._update_card_sizes)

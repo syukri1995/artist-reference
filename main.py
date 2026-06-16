@@ -2,9 +2,36 @@ import sys
 import os
 from pathlib import Path
 
+# Disable OpenCL for OpenCV globally to prevent driver/build conflicts (CL_BUILD_PROGRAM_FAILURE)
+os.environ["OPENCV_OCL4DNN_DISABLE_OPCL"] = "1"
+os.environ["OPENCV_OPENCL_RUNTIME"] = "disabled"
+
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from PyQt5.QtWidgets import (
+    QApplication, QDialog, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QScrollArea, QShortcut, QStackedWidget,
+    QVBoxLayout, QWidget,
+)
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtCore import Qt, QTimer
+
+from app_settings import get_settings
+from database import init_db
+from logging_config import setup_logging
+from ui.branding import apply_window_icon
+from ui.theme import build_stylesheet
+from ui.toast import ToastOverlay
+from version import APP_VERSION, UPDATE_URL
+from managers.update_manager import UpdateManager
+from managers.backup_manager import BackupManager
+from managers.ai_manager import AIManager
+from ui.gallery_view import GalleryView
+from ui.workspace_view import WorkspaceView
+from ui.upload_view import UploadView
+from ui.danbooru_view import DanbooruView
+from ui.update_dialog import UpdateDialog
 
 def load_local_env() -> None:
     base_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -30,28 +57,6 @@ def resource_path(relative_path: str) -> str:
     """Resolve a resource path that works both in dev and when frozen by PyInstaller."""
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, relative_path)
-
-from PyQt5.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QScrollArea, QShortcut, QStackedWidget,
-    QStatusBar, QVBoxLayout, QWidget,
-)
-from PyQt5.QtGui import QIcon, QKeySequence
-from PyQt5.QtCore import Qt, QTimer
-
-from app_settings import get_settings
-from database import get_base_dir, init_db
-from logging_config import setup_logging
-from ui.branding import apply_window_icon
-from ui.theme import build_stylesheet
-from ui.toast import ToastOverlay
-from version import APP_VERSION, UPDATE_URL
-from managers.update_manager import UpdateManager
-from ui.gallery_view import GalleryView
-from ui.workspace_view import WorkspaceView
-from ui.upload_view import UploadView
-from ui.danbooru_view import DanbooruView
-from ui.update_dialog import UpdateDialog
 
 # Gallery needs room for sidebar + grid; workspace overlay can be tiny.
 _GALLERY_MIN_SIZE = (1000, 640)
@@ -122,7 +127,11 @@ class Application(QMainWindow):
         self.main_layout.addWidget(self.stacked_widget)
         
         # Initialize views
-        self.gallery_view = GalleryView(self)
+        self.gallery_view = GalleryView(
+            self,
+            status_callback=self.show_status,
+            toast_callback=self.show_toast,
+        )
         self.workspace_view = WorkspaceView(
             self,
             self.show_gallery,
@@ -164,10 +173,39 @@ class Application(QMainWindow):
         
         self.show_gallery()
         
-        # Check for updates silently
-        self.update_manager = UpdateManager(APP_VERSION, UPDATE_URL)
-        QTimer.singleShot(1000, lambda: self.update_manager.check_for_updates(self.on_update_available))
-        QTimer.singleShot(500, self._run_health_check)
+        # Initialize AI Manager once
+        self.ai_manager = AIManager()
+        self.ai_manager._progress_callback = self._on_ai_progress
+
+    def _on_ai_progress(self, current, total, image_id=None, status='scanning'):
+        """Handle progress updates from the AI Manager."""
+        # Update Gallery UI (thread-safe via QTimer)
+        # Capture current values in lambda defaults to avoid closure issues
+        QTimer.singleShot(0, lambda c=current, t=total, i=image_id, s=status: 
+                          self.gallery_view.set_ai_scan_progress(c, t, i, s))
+        
+        # Update Settings Dialog if open
+        from PyQt5.QtWidgets import QDialog
+        for child in self.findChildren(QDialog):
+            if hasattr(child, "update_scan_progress"):
+                QTimer.singleShot(0, lambda c=child: c.update_scan_progress(current, total))
+
+    def _start_ai_scanner(self, scan_all: bool = False):
+        """Request the AI manager to enqueue pending or all images for background analysis."""
+        self.ai_manager.scan_pending_images(scan_all=scan_all)
+
+    def _run_auto_backup(self):
+        import threading
+        import logging
+        def run():
+            try:
+                bm = BackupManager()
+                path = bm.auto_backup()
+                if path:
+                    logging.getLogger(__name__).info(f"Auto-backup created: {path}")
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Auto-backup startup task failed: {e}")
+        threading.Thread(target=run, daemon=True).start()
 
     def show_status(self, message: str, timeout_ms: int = 5000) -> None:
         self.statusBar().showMessage(message, timeout_ms)
@@ -193,6 +231,8 @@ class Application(QMainWindow):
         self.show_gallery()
         self.show_toast("Upload complete")
         self.show_status("Upload finished")
+        # Trigger priority AI scan for new uploads
+        self._start_ai_scanner(scan_all=False)
 
     def _run_health_check(self):
         from managers.image_manager import ImageManager
@@ -265,9 +305,10 @@ class Application(QMainWindow):
     def _on_danbooru_import_done(self) -> None:
         from database import rebuild_images_fts
         rebuild_images_fts()
-        self.gallery_view.refresh_tags_list()
-        self.gallery_view.refresh_collections_list()
+        self.gallery_view.load_gallery()
         self.show_status("Library index updated after import", 4000)
+        # Trigger priority AI scan for imported images
+        self._start_ai_scanner(scan_all=False)
 
     def _is_detached_open(self) -> bool:
         return (

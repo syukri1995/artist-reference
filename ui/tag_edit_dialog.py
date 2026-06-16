@@ -96,5 +96,9 @@ class TagEditDialog(QDialog):
             self.tag_mgr.remove_all_tags_from_image(img_id)
             self.tag_mgr.add_tags_to_image(img_id, selected)
         if self._on_saved:
-            self._on_saved(len(self.image_ids))
+            try:
+                self._on_saved(len(self.image_ids))
+            except TypeError:
+                # Handle cases where the callback doesn't expect arguments (e.g. GalleryView.load_gallery)
+                self._on_saved()
         self.accept()

@@ -3,24 +3,32 @@
 from PyQt5.QtCore import QPointF
 from PyQt5.QtWidgets import QUndoCommand, QUndoStack
 
-from ui.workspace_items import GraphicsPixmapItem
+from ui.workspace_items import GraphicsPixmapItem, StickyNoteItem
 
 
 class _ItemSnapshot:
     """Serializable state for one canvas item."""
 
-    def __init__(self, item: GraphicsPixmapItem) -> None:
-        self.path = item.path
-        self.image_id = item.image_id
+    def __init__(self, item) -> None:
+        self.type = "pixmap" if isinstance(item, GraphicsPixmapItem) else "note"
         self.pos = QPointF(item.pos())
-        self.scale = item.scale()
         self.z = item.zValue()
-        self.flip_h = item.flip_h
-        self.flip_v = item.flip_v
-        self.grayscale = item.grayscale
-        self.opacity = item.opacity()
-        self.base_scale = item.base_scale
         self.locked = item._locked
+        
+        if self.type == "pixmap":
+            self.path = item.path
+            self.image_id = item.image_id
+            self.scale = item.scale()
+            self.flip_h = item.flip_h
+            self.flip_v = item.flip_v
+            self.grayscale = item.grayscale
+            self.opacity = item.opacity()
+            self.base_scale = item.base_scale
+        else:
+            self.text = item.text_item.toPlainText()
+            self.width = item.rect().width()
+            self.height = item.rect().height()
+            self.color = item._color.name()
 
     @classmethod
     def from_path(
@@ -33,6 +41,7 @@ class _ItemSnapshot:
     ) -> "_ItemSnapshot":
         """Pending add — used before the item exists on the scene."""
         snap = cls.__new__(cls)
+        snap.type = "pixmap"
         snap.path = path
         snap.image_id = image_id
         snap.pos = QPointF(x, y)
@@ -46,31 +55,60 @@ class _ItemSnapshot:
         snap.locked = False
         return snap
 
+    @classmethod
+    def from_note(
+        cls,
+        text: str,
+        x: float,
+        y: float,
+        width: float = 200,
+        height: float = 150,
+        color: str = "#FDE047"
+    ) -> "_ItemSnapshot":
+        snap = cls.__new__(cls)
+        snap.type = "note"
+        snap.text = text
+        snap.pos = QPointF(x, y)
+        snap.width = width
+        snap.height = height
+        snap.z = 0.0
+        snap.color = color
+        snap.locked = False
+        return snap
 
-def snapshot_item(item: GraphicsPixmapItem) -> _ItemSnapshot:
+
+def snapshot_item(item) -> _ItemSnapshot:
     return _ItemSnapshot(item)
 
 
-def restore_item(scene, snap: _ItemSnapshot) -> GraphicsPixmapItem | None:
-    from PIL import Image
-    from utils_image import pil_to_qpixmap
+def restore_item(scene, snap: _ItemSnapshot):
+    if snap.type == "pixmap":
+        from PIL import Image
+        from utils_image import pil_to_qpixmap
 
-    try:
-        pixmap = pil_to_qpixmap(Image.open(snap.path))
-    except Exception:
-        return None
-    item = GraphicsPixmapItem(pixmap, snap.path)
-    item.image_id = snap.image_id
-    item.setPos(snap.pos)
-    item.setScale(snap.scale)
-    item.base_scale = snap.base_scale
-    item.setZValue(snap.z)
-    item.setOpacity(snap.opacity)
-    item.set_locked(snap.locked)
-    item.set_flip(snap.flip_h, snap.flip_v)
-    item.set_grayscale(getattr(snap, "grayscale", False))
-    scene.addItem(item)
-    return item
+        try:
+            with Image.open(snap.path) as img:
+                pixmap = pil_to_qpixmap(img)
+        except Exception:
+            return None
+        item = GraphicsPixmapItem(pixmap, snap.path)
+        item.image_id = snap.image_id
+        item.setPos(snap.pos)
+        item.setScale(snap.scale)
+        item.base_scale = snap.base_scale
+        item.setZValue(snap.z)
+        item.setOpacity(snap.opacity)
+        item.set_locked(snap.locked)
+        item.set_flip(snap.flip_h, snap.flip_v)
+        item.set_grayscale(getattr(snap, "grayscale", False))
+        scene.addItem(item)
+        return item
+    else:
+        item = StickyNoteItem(snap.text, snap.pos.x(), snap.pos.y(), snap.width, snap.height, snap.color)
+        item.setZValue(snap.z)
+        item.set_locked(snap.locked)
+        scene.addItem(item)
+        return item
 
 
 class AddItemsCommand(QUndoCommand):
@@ -160,13 +198,21 @@ class TransformItemsCommand(QUndoCommand):
     def _apply_snaps(self, snaps: list[_ItemSnapshot]) -> None:
         for item, snap in zip(self._items, snaps):
             item.setPos(snap.pos)
-            item.setScale(snap.scale)
-            item.base_scale = snap.base_scale
             item.setZValue(snap.z)
-            item.setOpacity(snap.opacity)
             item.set_locked(snap.locked)
-            item.set_flip(snap.flip_h, snap.flip_v)
-            item.set_grayscale(getattr(snap, "grayscale", False))
+            
+            if snap.type == "pixmap":
+                item.setScale(snap.scale)
+                item.base_scale = snap.base_scale
+                item.setOpacity(snap.opacity)
+                item.set_flip(snap.flip_h, snap.flip_v)
+                item.set_grayscale(getattr(snap, "grayscale", False))
+            else:
+                item.text_item.setPlainText(snap.text)
+                item.setRect(0, 0, snap.width, snap.height)
+                item.text_item.setTextWidth(snap.width - 10)
+                item._color = QColor(snap.color)
+                item.update_appearance()
         self._ws._schedule_save()
 
     def undo(self) -> None:

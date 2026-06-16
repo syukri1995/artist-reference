@@ -17,30 +17,37 @@ Built with **Python + PyQt5** and a **SQLite** backend.
 - **Recently Viewed** — automatically tracks the last images you opened in the workspace
 
 ### 🔍 Gallery View
-- Responsive grid layout with adjustable column count (2–8 columns via slider in the topbar)
-- Background thumbnail loading via `QThread` — the UI stays responsive even with large libraries
-- Paginated browsing (50 images per page by default)
-- **Search** by filename or tag, with live **tag autocomplete** dropdown as you type
-- **Bulk multi-select** — click multiple images, then retag or batch-send them to the workspace in one action
-- **Right-click context menu** per image:
-  - Add to / remove from collection
-  - Edit tags
-  - Toggle favourite
-  - Open in workspace / add to workspace
-  - Delete from library
+- Responsive grid layout with adjustable column count (2–8 columns via slider in the topbar).
+- **Auto-fitting Grid**: Thumbnails dynamically resize to fill the viewport perfectly without side gaps.
+- Background thumbnail loading via `QThread` — the UI stays responsive even with large libraries.
+- Paginated browsing (50 images per page by default).
+- **Search** by filename or tag, with live **tag autocomplete** dropdown as you type.
+- **Lightbox Viewer**: Double-click any image to open a full-screen immersive viewer with high-res rendering and keyboard navigation (Next/Prev).
+- **Bulk multi-select**: `Ctrl + Click` to toggle selection and `Shift + Click` for range selection.
+- **Enhanced Detail Panel**:
+  - **Path Truncation**: Middle-elided file paths (e.g., `G:\...\image.jpg`) to fit long paths neatly.
+  - **Tag Pills**: Visual "pill" style tags that wrap automatically for clean scannability.
+- **Right-click context menu**:
+  - Open selected image(s) in Workspace (primary action).
+  - **Send to Workspace**: Quickly append selection to any of the 5 workspace slots (Slot 1–5).
+  - Edit tags for single or multiple images.
 
 ### 🖼 Infinite Workspace Canvas
-- **QGraphicsScene / QGraphicsView** canvas — smooth pan and zoom (software-rendered)
-- Drag images freely anywhere on the canvas
-- **Scroll wheel** to zoom the canvas; **Ctrl + Scroll** to scale only the selected image
-- **Middle-click or Right-click drag** to pan the canvas
-- **Flip Horizontal / Flip Vertical** per selected image
-- **🎨 Color Palette extractor** — select an image and extract its 6 dominant colours as hex swatches
-- **💾 Export Workspace** — renders the entire canvas to a PNG file
-- **5 save slots** — save and recall up to 5 independent workspace layouts
-- **Auto-save** every 2 minutes to the active slot
-- **Delete / Backspace** to remove selected images from the canvas
-- **Detachable workspace window** — float the canvas in a separate window so you can keep references visible while painting in another app
+- **QGraphicsScene / QGraphicsView** canvas — smooth pan and zoom (software-rendered).
+- Drag images freely anywhere on the canvas.
+- **Scroll wheel** to zoom the canvas; **Ctrl + Scroll** to scale only the selected image.
+- **Middle-click or Right-click drag** to pan the canvas.
+- **Flip Horizontal / Flip Vertical** per selected image.
+- **🎨 Color Palette extractor** — select an image and extract its 6 dominant colours as hex swatches.
+- **💾 Export Workspace** — renders the entire canvas to a PNG file.
+- **5 save slots** — save and recall up to 5 independent workspace layouts.
+- **Auto-save** every 2 minutes to the active slot.
+- **Delete / Backspace** to remove selected images from the canvas.
+- **Detachable workspace window** — float the canvas in a separate window so you can keep references visible while painting in another app.
+
+### 🎨 Theming
+- **Custom Dark Theme**: Fully tailored UI with deep navy/slate tokens and vibrant violet accents.
+- **Custom Scrollbars**: Modern, arrow-less scrollbars with muted purple "pill" handles for a sleek aesthetic.
 
 ### ⚙ Settings & Housekeeping
 - **Startup health check** — scans for library entries whose source files no longer exist on disk and offers to remove them

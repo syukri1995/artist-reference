@@ -55,6 +55,7 @@ _qt_imageformats = _qt_plugins / "imageformats"
 datas = [
     ("assets/app_icon.ico", "assets"),
     ("assets/app_icon.png", "assets"),
+    ("assets/icons/*.svg", "assets/icons"),
     (certifi.where(), "certifi"),
     (str(_qt_platforms / "qwindows.dll"), "PyQt5/Qt5/plugins/platforms"),
     (str(_qt_styles / "qwindowsvistastyle.dll"), "PyQt5/Qt5/plugins/styles"),
@@ -86,8 +87,6 @@ a = Analysis(
     excludes=[
         "tkinter",
         "matplotlib",
-        "numpy",
-        "scipy",
         "pandas",
         "PyQt5.QtWebEngine",
         "PyQt5.QtWebEngineCore",

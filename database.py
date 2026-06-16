@@ -328,6 +328,21 @@ def init_db():
         pass
 
     try:
+        cursor.execute("ALTER TABLE images ADD COLUMN ai_status TEXT DEFAULT 'pending'") # 'pending', 'scanning', 'completed', 'failed'
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE image_tags ADD COLUMN is_ai BOOLEAN DEFAULT 0")
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE image_tags ADD COLUMN confidence REAL DEFAULT 1.0")
+    except Exception:
+        pass
+
+    try:
         cursor.execute("ALTER TABLE images ADD COLUMN last_viewed DATETIME")
     except Exception:
         pass
@@ -372,6 +387,21 @@ def init_db():
     _migrate_workspace_opacity(cursor)
     _migrate_workspace_grayscale(cursor)
     _migrate_images_fts(cursor)
+
+    # Workspace Notes Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS workspace_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_id INTEGER NOT NULL DEFAULT 1,
+            text TEXT,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            width REAL NOT NULL,
+            height REAL NOT NULL,
+            z_order INTEGER NOT NULL,
+            color TEXT
+        )
+    """)
 
     # Performance Indexes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_file_path ON images(file_path)")

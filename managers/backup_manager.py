@@ -49,6 +49,23 @@ class BackupManager:
 
         return str(dest)
 
+    def auto_backup(self) -> str | None:
+        """Create a daily backup if one doesn't exist for today."""
+        backup_dir = self.base_dir / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        dest = backup_dir / f"autobackup_{today}.zip"
+        
+        if dest.exists():
+            return None
+            
+        try:
+            return self.create_backup(str(dest))
+        except Exception as e:
+            logger.error(f"Auto-backup failed: {e}")
+            return None
+
     def restore_backup(self, src_zip: str) -> None:
         """Restore from a backup zip into the data directory (overwrites DB and media)."""
         src = Path(src_zip)

@@ -2,14 +2,14 @@
 workspace_view.py — QGraphicsScene-based infinite canvas for viewing reference images.
 """
 import logging
+import hashlib
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer, QRectF, pyqtSignal
-from PyQt5.QtGui import QImage, QPainter, QWheelEvent, QMouseEvent
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QMimeData
+from PyQt5.QtGui import QImage, QPainter, QWheelEvent, QMouseEvent, QDragEnterEvent, QDropEvent
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFrame, QGraphicsScene, QGraphicsView,
-    QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QSlider,
-    QVBoxLayout, QWidget, QShortcut,
+    QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget, QShortcut, QInputDialog, QActionGroup,
 )
 from PyQt5.QtGui import QKeySequence
 from PIL import Image
@@ -17,7 +17,16 @@ from PIL import Image
 from app_settings import get_settings
 from managers.image_manager import ImageManager
 from managers.workspace_manager import WorkspaceManager
-from ui.workspace_items import GraphicsPixmapItem
+from managers.tag_manager import TagManager
+from ui.workspace_items import GraphicsPixmapItem, StickyNoteItem
+from ui.workspace_layout import (
+    grid_layout,
+    horizontal_layout,
+    vertical_layout,
+    pack_layout,
+    grouped_layout,
+    sort_items,
+)
 from ui.workspace_undo import (
     AddItemsCommand,
     MoveItemsCommand,
@@ -25,7 +34,6 @@ from ui.workspace_undo import (
     TransformItemsCommand,
     _ItemSnapshot,
     create_undo_stack,
-    restore_item,
     snapshot_item,
 )
 from utils_image import pil_to_qpixmap
@@ -50,9 +58,27 @@ class ExtendedGraphicsView(QGraphicsView):
         self._pan_start_pos = None
         self._zoom_callback = None
         self._workspace = None
+        self.setAcceptDrops(True)
 
     def set_workspace(self, ws) -> None:
         self._workspace = ws
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls() or event.mimeData().hasImage():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self._workspace:
+            pos = self.mapToScene(event.pos())
+            self._workspace._handle_drop(event.mimeData(), pos.x(), pos.y())
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     def set_zoom_callback(self, cb) -> None:
         self._zoom_callback = cb
@@ -104,6 +130,10 @@ class ExtendedGraphicsView(QGraphicsView):
             if self._workspace:
                 self._workspace._delete_selected()
             return
+        if event.key() == Qt.Key_V and event.modifiers() == Qt.ControlModifier:
+            if self._workspace:
+                self._workspace._handle_paste()
+            return
         super().keyPressEvent(event)
 
     def resizeEvent(self, event) -> None:
@@ -149,17 +179,26 @@ class WorkspaceView(QWidget):
         self._toast = toast_callback
         self.ws_manager = WorkspaceManager()
         self.image_mgr = ImageManager()
+        self.tag_mgr = TagManager()
         self.current_slot = get_settings().get_workspace_slot()
+        self.arrange_sort_by = "date"
         self._autosave_enabled = True
         self._slot_buttons: dict[int, QPushButton] = {}
         self._drag_starts: dict[int, object] = {}
+
+        # Pre-initialize checkboxes to avoid AttributeErrors
+        self.float_cb = QCheckBox()
+        self.topmost_cb = QCheckBox()
+        self.fullscreen_cb = QCheckBox()
+
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(400)
-        self._save_timer.timeout.connect(lambda: self._perform_autosave(manual=False))
+        self._save_timer.timeout.connect(lambda *args: self._perform_autosave(manual=False))
 
         self._undo_stack = create_undo_stack(self)
         self._loading_slot = False
+        self._snap_lines = []
 
         self._setup_ui()
 
@@ -201,7 +240,7 @@ class WorkspaceView(QWidget):
             "background-color: rgba(30, 41, 59, 220); color: #E2E8F0; "
             "border: 1px solid #475569; border-radius: 6px; padding: 4px 10px;"
         )
-        self._toolbar_restore_btn.clicked.connect(lambda: self._set_toolbar_visible(True))
+        self._toolbar_restore_btn.clicked.connect(lambda *args: self._set_toolbar_visible(True))
         self._toolbar_restore_btn.hide()
 
         self._hud = QLabel(canvas_wrap)
@@ -357,36 +396,36 @@ class WorkspaceView(QWidget):
         self._empty_hint.setVisible(not has_items)
 
     def _build_compact_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setFixedHeight(34)
-        bar.setStyleSheet(
-            "background-color: #1E293B; border-bottom: 1px solid #334155;"
-        )
+        bar = QFrame()
+        bar.setObjectName("toolbar")
+        bar.setFixedHeight(40)
+        bar.setStyleSheet("background-color: #161D2F; border-bottom: 1px solid #252F44;")
         row = QHBoxLayout(bar)
-        row.setContentsMargins(8, 2, 8, 2)
-        row.setSpacing(8)
+        row.setContentsMargins(12, 0, 12, 0)
+        row.setSpacing(12)
 
-        menu_btn = QPushButton("\u2630")
-        menu_btn.setFixedSize(30, 28)
-        menu_btn.setToolTip("Workspace menu (`)")
+        menu_btn = QPushButton("Menu \u25be") # Triangle down
+        menu_btn.setFixedSize(80, 28)
+        menu_btn.setToolTip("Workspace options (`)")
         menu_btn.clicked.connect(self._show_workspace_menu)
         row.addWidget(menu_btn)
 
         self._compact_slot = QLabel()
-        self._compact_slot.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self._compact_slot.setStyleSheet("color: #94A3B8; font-size: 12px; font-weight: 600;")
         row.addWidget(self._compact_slot)
 
         row.addStretch()
 
-        gallery_btn = QPushButton("Gallery")
-        gallery_btn.setToolTip("Return to library")
+        gallery_btn = QPushButton("Library")
+        gallery_btn.setFixedSize(80, 28)
         gallery_btn.clicked.connect(self.switch_to_gallery_callback)
         row.addWidget(gallery_btn)
         return bar
 
     def _update_compact_slot_label(self) -> None:
         if hasattr(self, "_compact_slot"):
-            self._compact_slot.setText(f"Slot {self.current_slot}")
+            name = get_settings().get_workspace_slot_name(self.current_slot)
+            self._compact_slot.setText(name)
 
     def _show_workspace_menu(self) -> None:
         menu = QMenu(self)
@@ -414,28 +453,47 @@ class WorkspaceView(QWidget):
         menu.addSeparator()
 
         if self._toolbar.isVisible():
-            menu.addAction("Compact bar", lambda: self._set_toolbar_visible(False))
+            menu.addAction("Compact bar", lambda *args: self._set_toolbar_visible(False))
         elif self.width() >= self._COMPACT_WIDTH and not self.is_float_mode():
-            menu.addAction("Full toolbar", lambda: self._set_toolbar_visible(True))
+            menu.addAction("Full toolbar", lambda *args: self._set_toolbar_visible(True))
 
         undo_menu = menu.addMenu("Undo / redo")
         undo_menu.addAction("Undo", self._undo_stack.undo)
         undo_menu.addAction("Redo", self._undo_stack.redo)
 
         zoom_menu = menu.addMenu("Zoom")
-        zoom_menu.addAction("Zoom in", lambda: self._zoom_by(1.25))
-        zoom_menu.addAction("Zoom out", lambda: self._zoom_by(0.8))
+        zoom_menu.addAction("Zoom in", lambda *args: self._zoom_by(1.25))
+        zoom_menu.addAction("Zoom out", lambda *args: self._zoom_by(0.8))
         zoom_menu.addAction("Fit all", self._fit_view)
         zoom_menu.addAction("100%", self._reset_view)
         zoom_menu.addAction("Zoom to selection", self._zoom_to_selection)
 
         edit_menu = menu.addMenu("Edit selection")
-        edit_menu.addAction("Flip horizontal", lambda: self._flip_selected(horizontal=True))
-        edit_menu.addAction("Flip vertical", lambda: self._flip_selected(vertical=True))
+        edit_menu.addAction("Flip horizontal", lambda *args: self._flip_selected(horizontal=True))
+        edit_menu.addAction("Flip vertical", lambda *args: self._flip_selected(vertical=True))
         edit_menu.addAction("Toggle grayscale", self._toggle_grayscale_selected)
         edit_menu.addAction("Bring forward", self._bring_forward)
         edit_menu.addAction("Send backward", self._send_backward)
         edit_menu.addAction("Delete", self._delete_selected)
+
+        arrange_menu = menu.addMenu("Arrange")
+        arrange_menu.addAction("Grid", lambda *args: self._apply_auto_arrange("grid"))
+        arrange_menu.addAction("Horizontal", lambda *args: self._apply_auto_arrange("horizontal"))
+        arrange_menu.addAction("Vertical", lambda *args: self._apply_auto_arrange("vertical"))
+        arrange_menu.addAction("Pack (Mosaic)", lambda *args: self._apply_auto_arrange("pack"))
+        arrange_menu.addAction("By Group (Tags)", lambda *args: self._apply_auto_arrange("grouped"))
+        arrange_menu.addSeparator()
+        
+        sort_menu = arrange_menu.addMenu("Sort by")
+        date_act = sort_menu.addAction("Date Added")
+        date_act.setCheckable(True)
+        date_act.setChecked(self.arrange_sort_by == "date")
+        date_act.triggered.connect(lambda *args: setattr(self, "arrange_sort_by", "date"))
+        
+        size_act = sort_menu.addAction("Size")
+        size_act.setCheckable(True)
+        size_act.setChecked(self.arrange_sort_by == "size")
+        size_act.triggered.connect(lambda *args: setattr(self, "arrange_sort_by", "size"))
 
         menu.addAction("Extract palette", self._extract_palette)
         menu.addAction("Export PNG", self._export)
@@ -444,104 +502,159 @@ class WorkspaceView(QWidget):
 
         slot_menu = menu.addMenu(f"Workspace slot ({self.current_slot})")
         for i in range(1, 6):
-            slot_menu.addAction(f"Slot {i}", lambda _, s=i: self._load_slot(s))
+            slot_menu.addAction(f"Slot {i}", lambda *args, s=i: self._load_slot(s))
 
         menu.addAction("Clear all", self._confirm_clear_all)
         menu.exec_(self._compact_bar.mapToGlobal(self._compact_bar.rect().bottomLeft()))
 
+    def _add_note(self, x=None, y=None) -> None:
+        if x is None or y is None:
+            # Add to center of view
+            center = self.view.mapToScene(self.view.viewport().rect().center())
+            x, y = center.x(), center.y()
+        
+        snap = _ItemSnapshot.from_note("New Note", x, y)
+        self._undo_stack.push(AddItemsCommand(self, [snap], text="Add note"))
+        self._schedule_save()
+        self._update_empty_hint()
+
     def _build_toolbar(self) -> QWidget:
-        toolbar = QWidget()
-        toolbar.setStyleSheet("background-color: #1E293B;")
-        toolbar.setFixedHeight(56)
+        toolbar = QFrame()
+        toolbar.setObjectName("toolbar")
+        toolbar.setFixedHeight(64)
         tb = QHBoxLayout(toolbar)
-        tb.setContentsMargins(16, 4, 16, 4)
+        tb.setContentsMargins(20, 0, 20, 0)
+        tb.setSpacing(12)
 
         def sep() -> QFrame:
             f = QFrame()
             f.setFrameShape(QFrame.VLine)
-            f.setStyleSheet("color: #334155;")
+            f.setStyleSheet("color: #252F44; margin: 16px 4px;")
             return f
 
-        def btn(label: str, slot, tip: str = "", style: str = "") -> QPushButton:
+        def btn(label: str, slot, tip: str = "", style: str = "", active: bool = False, large: bool = False) -> QPushButton:
             b = QPushButton(label)
             b.clicked.connect(slot)
             if tip:
                 b.setToolTip(tip)
+            if large:
+                b.setStyleSheet("font-size: 18px; font-weight: bold;")
             if style:
-                b.setStyleSheet(style)
+                # Append to existing style if 'large' was set
+                existing = b.styleSheet()
+                b.setStyleSheet(existing + style)
             return b
 
-        tb.addWidget(btn("Gallery", self.switch_to_gallery_callback, "Return to library"))
+        # Navigation
+        tb.addWidget(btn("Library", self.switch_to_gallery_callback, "Return to Gallery"))
+        tb.addWidget(sep())
+
+        # History
         self._undo_btn = btn("Undo", self._undo_stack.undo, "Undo (Ctrl+Z)")
         self._redo_btn = btn("Redo", self._undo_stack.redo, "Redo (Ctrl+Y)")
         self._undo_stack.canUndoChanged.connect(self._undo_btn.setEnabled)
         self._undo_stack.canRedoChanged.connect(self._redo_btn.setEnabled)
-        self._undo_btn.setEnabled(False)
-        self._redo_btn.setEnabled(False)
         tb.addWidget(self._undo_btn)
         tb.addWidget(self._redo_btn)
         tb.addWidget(sep())
-        tb.addWidget(btn("Zoom In", lambda: self._zoom_by(1.25), "Zoom canvas in"))
-        tb.addWidget(btn("Zoom Out", lambda: self._zoom_by(0.8), "Zoom canvas out"))
-        tb.addWidget(btn("Fit", self._fit_view, "Fit all images in view"))
-        tb.addWidget(btn("100%", self._reset_view, "Reset canvas zoom to 100%"))
-        tb.addWidget(btn("Sel", self._zoom_to_selection, "Zoom to selection"))
+
+        # View Controls
+        zoom_row = QHBoxLayout()
+        zoom_row.setSpacing(4)
+        z_in = btn("+", lambda *args: self._zoom_by(1.25), "Zoom In", large=True)
+        z_out = btn("-", lambda *args: self._zoom_by(0.8), "Zoom Out", large=True)
+        z_fit = btn("Fit", self._fit_view, "Fit All")
+        for b in (z_in, z_out, z_fit):
+            b.setFixedSize(44, 36)
+            zoom_row.addWidget(b)
+        tb.addLayout(zoom_row)
         tb.addWidget(sep())
-        tb.addWidget(btn("Flip H", lambda: self._flip_selected(horizontal=True), "Flip selected horizontally"))
-        tb.addWidget(btn("Flip V", lambda: self._flip_selected(vertical=True), "Flip selected vertically"))
-        tb.addWidget(btn("Gray", self._toggle_grayscale_selected, "Toggle grayscale on selected image"))
-        tb.addWidget(btn("Front", self._bring_forward, "Bring selected forward"))
-        tb.addWidget(btn("Back", self._send_backward, "Send selected backward"))
+
+        # Edit Selection
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(4)
+        f_h = btn("Flip H", lambda *args: self._flip_selected(horizontal=True), "Flip Horizontal")
+        f_v = btn("Flip V", lambda *args: self._flip_selected(vertical=True), "Flip Vertical")
+        gray = btn("Gray", self._toggle_grayscale_selected, "Toggle Grayscale")
+        for b in (f_h, f_v, gray):
+            edit_row.addWidget(b)
+        tb.addLayout(edit_row)
+        
+        # Arrange Menu
+        arrange_btn = QPushButton("Arrange \u25be")
+        arrange_btn.setFixedSize(100, 36)
+        arrange_menu = QMenu(self)
+        arrange_menu.addAction("Grid", lambda *args: self._apply_auto_arrange("grid"))
+        arrange_menu.addAction("Horizontal", lambda *args: self._apply_auto_arrange("horizontal"))
+        arrange_menu.addAction("Vertical", lambda *args: self._apply_auto_arrange("vertical"))
+        arrange_menu.addAction("Pack (Mosaic)", lambda *args: self._apply_auto_arrange("pack"))
+        arrange_menu.addAction("By Group (Tags)", lambda *args: self._apply_auto_arrange("grouped"))
+        arrange_menu.addSeparator()
+        
+        sort_menu = arrange_menu.addMenu("Sort by")
+        sort_group = QActionGroup(self)
+        a_date = sort_menu.addAction("Date Added")
+        a_date.setCheckable(True)
+        a_date.setChecked(self.arrange_sort_by == "date")
+        a_date.triggered.connect(lambda *args: setattr(self, "arrange_sort_by", "date"))
+        sort_group.addAction(a_date)
+        a_size = sort_menu.addAction("Size")
+        a_size.setCheckable(True)
+        a_size.setChecked(self.arrange_sort_by == "size")
+        a_size.triggered.connect(lambda *args: setattr(self, "arrange_sort_by", "size"))
+        sort_group.addAction(a_size)
+        
+        arrange_btn.setMenu(arrange_menu)
+        tb.addWidget(arrange_btn)
         tb.addWidget(sep())
-        tb.addWidget(btn("Palette", self._extract_palette, "Extract dominant colors"))
-        tb.addWidget(btn("Export", self._export, "Export canvas as PNG"))
+
+        # Palette & Export
+        tb.addWidget(btn("Note", self._add_note, "Add Sticky Note"))
+        tb.addWidget(btn("🎨", self._extract_palette, "Extract Palette"))
+        tb.addWidget(btn("PNG", self._export, "Export Canvas"))
+        
         tb.addStretch()
 
-        self.float_cb = QCheckBox("Float")
-        self.float_cb.setToolTip(
-            "Scale references when resizing the window (ideal for topmost overlay)"
-        )
+        # Workspace Modes
+        modes_row = QHBoxLayout()
+        modes_row.setSpacing(8)
+        self.float_cb.setText("Float")
         self.float_cb.stateChanged.connect(self._on_float_toggled)
-        tb.addWidget(self.float_cb)
-
-        self.topmost_cb = QCheckBox("Topmost")
-        self.topmost_cb.setToolTip("Keep window above other apps (enables Float mode)")
+        self.topmost_cb.setText("Top")
         self.topmost_cb.stateChanged.connect(self._on_topmost_toggled)
-        tb.addWidget(self.topmost_cb)
-
-        self.fullscreen_cb = QCheckBox("Fullscreen")
-        self.fullscreen_cb.setToolTip("Toggle fullscreen")
+        self.fullscreen_cb.setText("Full")
         self.fullscreen_cb.stateChanged.connect(lambda s: self.toggle_fullscreen_cb(s == Qt.Checked))
-        tb.addWidget(self.fullscreen_cb)
-
+        modes_row.addWidget(self.float_cb)
+        modes_row.addWidget(self.topmost_cb)
+        modes_row.addWidget(self.fullscreen_cb)
+        tb.addLayout(modes_row)
         tb.addWidget(sep())
-        slot_label = QLabel("Slot:")
-        slot_label.setStyleSheet("color: #94A3B8;")
+
+        # Slots
+        slot_label = QLabel("SLOTS")
+        slot_label.setStyleSheet("color: #64748B; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
         tb.addWidget(slot_label)
         slots_row = QHBoxLayout()
         slots_row.setSpacing(4)
         for i in range(1, 6):
             b = QPushButton(str(i))
             b.setFixedSize(32, 32)
-            b.setToolTip(f"Load workspace layout slot {i}")
             b.clicked.connect(lambda _, slot=i: self._load_slot(slot))
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda pos, slot=i: self._show_slot_context_menu(pos, slot))
             self._slot_buttons[i] = b
             slots_row.addWidget(b)
         tb.addLayout(slots_row)
         self._highlight_slot_button()
 
-        tb.addWidget(btn("Save", self.save_now, "Save layout to current slot"))
         tb.addWidget(sep())
-        tb.addWidget(
-            btn(
-                "Clear All",
-                self._confirm_clear_all,
-                "Remove all images from canvas",
-                "background-color: #DC2626; border-color: #991B1B;",
-            ),
-        )
-        tb.addWidget(sep())
-        tb.addWidget(btn("Hide bar", self._toggle_toolbar, "Hide toolbar (`)"))
+        tb.addWidget(btn("Save", self.save_now, "Save Layout", "background-color: #10B981; color: white;"))
+        
+        hide_btn = btn("×", self._toggle_toolbar, "Hide Toolbar")
+        hide_btn.setFixedSize(32, 32)
+        hide_btn.setStyleSheet("background: transparent; color: #64748B; border: none; font-size: 18px;")
+        tb.addWidget(hide_btn)
+
         return toolbar
 
     def _zoom_by(self, factor: float) -> None:
@@ -564,12 +677,49 @@ class WorkspaceView(QWidget):
             self.view._notify_zoom()
 
     def _highlight_slot_button(self) -> None:
+        counts = self.ws_manager.get_slot_counts()
         for i, b in self._slot_buttons.items():
+            name = get_settings().get_workspace_slot_name(i)
+            count = counts.get(i, 0)
+            b.setToolTip(f"{name} ({count} images)")
             if i == self.current_slot:
                 b.setStyleSheet("background-color: #7C3AED; border-color: #6D28D9;")
             else:
                 b.setStyleSheet("")
         self._update_compact_slot_label()
+
+    def _show_slot_context_menu(self, pos, slot_id: int) -> None:
+        menu = QMenu(self)
+        menu.addAction("Rename slot...", lambda *args: self._rename_slot(slot_id))
+        menu.addAction("Clear slot", lambda *args: self._confirm_clear_slot(slot_id))
+        menu.exec_(self._slot_buttons[slot_id].mapToGlobal(pos))
+
+    def _rename_slot(self, slot_id: int) -> None:
+        current_name = get_settings().get_workspace_slot_name(slot_id)
+        name, ok = QInputDialog.getText(self, "Rename Slot", "Slot Name:", text=current_name)
+        if ok and name:
+            get_settings().set_workspace_slot_name(slot_id, name)
+            self._highlight_slot_button()
+            if self._toast:
+                self._toast(f"Renamed slot {slot_id} to '{name}'")
+
+    def _confirm_clear_slot(self, slot_id: int) -> None:
+        name = get_settings().get_workspace_slot_name(slot_id)
+        if QMessageBox.question(
+            self,
+            "Clear slot",
+            f"Remove all images from {name}?\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        if slot_id == self.current_slot:
+            self._clear_all()
+        else:
+            self.ws_manager.save_state([], slot_id)
+            self._highlight_slot_button()
+            if self._toast:
+                self._toast(f"Cleared slot {slot_id}")
 
     def set_autosave_enabled(self, enabled: bool) -> None:
         self._autosave_enabled = enabled
@@ -601,7 +751,8 @@ class WorkspaceView(QWidget):
 
     def _add_item_from_path(self, path_str: str, x: float, y: float) -> GraphicsPixmapItem | None:
         try:
-            pixmap = pil_to_qpixmap(Image.open(path_str))
+            with Image.open(path_str) as img:
+                pixmap = pil_to_qpixmap(img)
             item = GraphicsPixmapItem(pixmap, path_str)
             item.image_id = self.image_mgr.get_image_id_by_path(path_str)
             item.setPos(x, y)
@@ -731,6 +882,8 @@ class WorkspaceView(QWidget):
         self.current_slot = slot_id
         get_settings().set_workspace_slot(slot_id)
         self._highlight_slot_button()
+        
+        # Load Images
         state = self.ws_manager.load_state(slot_id)
         self.scene.clear()
 
@@ -739,7 +892,8 @@ class WorkspaceView(QWidget):
                 path = s.get("file_path") or self.image_mgr.get_file_path_by_id(image_id)
                 if not path or not Path(path).exists():
                     continue
-                pixmap = pil_to_qpixmap(Image.open(path))
+                with Image.open(path) as img:
+                    pixmap = pil_to_qpixmap(img)
                 item = GraphicsPixmapItem(pixmap, path)
                 item.image_id = image_id
                 item.setPos(s["x"], s["y"])
@@ -752,30 +906,52 @@ class WorkspaceView(QWidget):
                 self.scene.addItem(item)
             except Exception as exc:
                 logger.warning("Could not restore image_id %s: %s", image_id, exc)
+        
+        # Load Notes
+        notes = self.ws_manager.load_notes(slot_id)
+        for n in notes:
+            item = StickyNoteItem(n["text"], n["x"], n["y"], n["width"], n["height"], n["color"])
+            item.setZValue(n["z_order"])
+            self.scene.addItem(item)
+
         self._loading_slot = False
         self._update_empty_hint()
 
     def _perform_autosave(self, manual: bool = False) -> None:
-        state = []
-        for item in self._pixmap_items():
-            image_id = item.image_id or self.image_mgr.get_image_id_by_path(item.path)
-            if image_id is None:
-                continue
-            item.image_id = image_id
-            state.append({
-                "image_id": image_id,
-                "file_path": item.path,
-                "x": item.pos().x(),
-                "y": item.pos().y(),
-                "scale": item.scale(),
-                "z_order": int(item.zValue()),
-                "flip_h": item.flip_h,
-                "flip_v": item.flip_v,
-                "opacity": item.opacity(),
-                "grayscale": item.grayscale,
-            })
+        image_state = []
+        note_state = []
+        for item in self.scene.items():
+            if isinstance(item, GraphicsPixmapItem):
+                image_id = item.image_id or self.image_mgr.get_image_id_by_path(item.path)
+                if image_id is None:
+                    continue
+                item.image_id = image_id
+                image_state.append({
+                    "image_id": image_id,
+                    "file_path": item.path,
+                    "x": item.pos().x(),
+                    "y": item.pos().y(),
+                    "scale": item.scale(),
+                    "z_order": int(item.zValue()),
+                    "flip_h": item.flip_h,
+                    "flip_v": item.flip_v,
+                    "opacity": item.opacity(),
+                    "grayscale": item.grayscale,
+                })
+            elif isinstance(item, StickyNoteItem):
+                note_state.append({
+                    "text": item.text_item.toPlainText(),
+                    "x": item.pos().x(),
+                    "y": item.pos().y(),
+                    "width": item.rect().width(),
+                    "height": item.rect().height(),
+                    "z_order": int(item.zValue()),
+                    "color": item._color.name(),
+                })
+
         try:
-            self.ws_manager.save_state(state, self.current_slot)
+            self.ws_manager.save_state(image_state, self.current_slot)
+            self.ws_manager.save_notes(note_state, self.current_slot)
             msg = f"Saved workspace slot {self.current_slot}"
             if self._status:
                 self._status(msg, 4000)
@@ -783,6 +959,88 @@ class WorkspaceView(QWidget):
                 self._toast(msg)
         except Exception as exc:
             logger.error("Autosave failed: %s", exc)
+
+    def _handle_item_move(self, moving_item, new_pos: QPointF) -> QPointF:
+        """Handle snapping and draw alignment guides."""
+        if not QApplication.mouseButtons() & Qt.LeftButton:
+            self._clear_snap_lines()
+            return new_pos
+
+        snap_dist = 10.0 / self.view.transform().m11()
+        rect = moving_item.sceneBoundingRect()
+        # Offset to apply to new_pos
+        dx, dy = 0.0, 0.0
+        
+        snapped_x, snapped_y = False, False
+        lines = []
+
+        # Reference points for the moving item
+        m_left = new_pos.x()
+        m_right = new_pos.x() + rect.width()
+        m_center_x = new_pos.x() + rect.width() / 2.0
+        m_top = new_pos.y()
+        m_bottom = new_pos.y() + rect.height()
+        m_center_y = new_pos.y() + rect.height() / 2.0
+
+        for item in self.scene.items():
+            if item == moving_item or not item.isVisible() or isinstance(item, (QGraphicsScene, QGraphicsView)):
+                continue
+            if not isinstance(item, (GraphicsPixmapItem, StickyNoteItem)):
+                continue
+                
+            r = item.sceneBoundingRect()
+            i_left, i_right, i_center_x = r.left(), r.right(), r.center().x()
+            i_top, i_bottom, i_center_y = r.top(), r.bottom(), r.center().y()
+
+            # Vertical snapping (X axis)
+            if not snapped_x:
+                for m_val, m_type in [(m_left, 'l'), (m_right, 'r'), (m_center_x, 'c')]:
+                    for i_val in [i_left, i_right, i_center_x]:
+                        if abs(m_val - i_val) < snap_dist:
+                            dx = i_val - m_val
+                            snapped_x = True
+                            lines.append(('v', i_val))
+                            break
+                    if snapped_x: break
+
+            # Horizontal snapping (Y axis)
+            if not snapped_y:
+                for m_val, m_type in [(m_top, 't'), (m_bottom, 'b'), (m_center_y, 'c')]:
+                    for i_val in [i_top, i_bottom, i_center_y]:
+                        if abs(m_val - i_val) < snap_dist:
+                            dy = i_val - m_val
+                            snapped_y = True
+                            lines.append(('h', i_val))
+                            break
+                    if snapped_y: break
+        
+        self._draw_snap_lines(lines)
+        return new_pos + QPointF(dx, dy)
+
+    def _clear_snap_lines(self):
+        from PyQt5.QtWidgets import QGraphicsLineItem
+        for line in self._snap_lines:
+            self.scene.removeItem(line)
+        self._snap_lines.clear()
+
+    def _draw_snap_lines(self, lines):
+        self._clear_snap_lines()
+        from PyQt5.QtWidgets import QGraphicsLineItem
+        from PyQt5.QtGui import QPen, QColor
+        
+        pen = QPen(QColor("#8B5CF6"), 1, Qt.DashLine)
+        pen.setCosmetic(True)
+        
+        scene_rect = self.scene.itemsBoundingRect()
+        for type, val in lines:
+            if type == 'v':
+                l = QGraphicsLineItem(val, scene_rect.top() - 1000, val, scene_rect.bottom() + 1000)
+            else:
+                l = QGraphicsLineItem(scene_rect.left() - 1000, val, scene_rect.right() + 1000, val)
+            l.setPen(pen)
+            l.setZValue(10000)
+            self.scene.addItem(l)
+            self._snap_lines.append(l)
 
     def _confirm_clear_all(self) -> None:
         if QMessageBox.question(
@@ -924,12 +1182,14 @@ class WorkspaceView(QWidget):
             item.setSelected(True)
 
         menu = QMenu(self)
+        menu.addAction("Add note", lambda: self._add_note(scene_pos.x(), scene_pos.y()))
+        menu.addSeparator()
         menu.addAction("Show in gallery", self._show_in_gallery)
         menu.addSeparator()
         toolbar_label = "Compact bar" if self._toolbar.isVisible() else "Full toolbar"
         menu.addAction(toolbar_label, self._toggle_toolbar)
         float_label = "Disable float mode" if self.is_float_mode() else "Enable float mode"
-        menu.addAction(float_label, lambda: self._set_float_mode(not self.is_float_mode()))
+        menu.addAction(float_label, lambda *args: self._set_float_mode(not self.is_float_mode()))
         menu.addSeparator()
         menu.addAction("Bring forward", self._bring_forward)
         menu.addAction("Send backward", self._send_backward)
@@ -943,8 +1203,8 @@ class WorkspaceView(QWidget):
             )
 
         menu.addSeparator()
-        menu.addAction("Flip horizontal", lambda: self._flip_selected(horizontal=True))
-        menu.addAction("Flip vertical", lambda: self._flip_selected(vertical=True))
+        menu.addAction("Flip horizontal", lambda *args: self._flip_selected(horizontal=True))
+        menu.addAction("Flip vertical", lambda *args: self._flip_selected(vertical=True))
         menu.addAction("Toggle grayscale", self._toggle_grayscale_selected)
         menu.addAction("Delete", self._delete_selected)
         menu.exec_(self.view.mapToGlobal(pos))
@@ -959,10 +1219,12 @@ class WorkspaceView(QWidget):
         if not items:
             return
         try:
-            pil_img = Image.open(items[0].path).convert("RGB")
-            pil_img.thumbnail((150, 150))
-            quantized = pil_img.quantize(colors=6)
-            raw_palette = quantized.getpalette() or []
+            with Image.open(items[0].path) as img:
+                pil_img = img.convert("RGB")
+                pil_img.thumbnail((150, 150))
+                quantized = pil_img.quantize(colors=6)
+                raw_palette = quantized.getpalette() or []
+            
             colors = [
                 f"#{raw_palette[i]:02x}{raw_palette[i+1]:02x}{raw_palette[i+2]:02x}"
                 for i in range(0, 18, 3)
@@ -1012,3 +1274,105 @@ class WorkspaceView(QWidget):
         img.save(path)
         if self._toast:
             self._toast("Workspace exported")
+
+    def _handle_drop(self, mime_data: QMimeData, x: float, y: float) -> None:
+        if mime_data.hasUrls():
+            paths = [u.toLocalFile() for u in mime_data.urls()]
+            self._import_and_add_to_canvas(paths, x, y)
+        elif mime_data.hasImage():
+            # Handle image dropped from browser
+            image = mime_data.imageData()
+            if isinstance(image, QImage):
+                temp_path = self.image_mgr.base_dir / "data" / "temp_drop.png"
+                image.save(str(temp_path))
+                self._import_and_add_to_canvas([str(temp_path)], x, y)
+
+    def _handle_paste(self) -> None:
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        # Paste at center of view
+        center = self.view.mapToScene(self.view.viewport().rect().center())
+        self._handle_drop(mime_data, center.x(), center.y())
+
+    def _import_and_add_to_canvas(self, paths: list[str], start_x: float, start_y: float) -> None:
+        x, y = start_x, start_y
+        new_snaps = []
+        imported_count = 0
+
+        for p in paths:
+            if not Path(p).exists():
+                continue
+            
+            # 1. Check if already in library by path or hash
+            image_id = self.image_mgr.get_image_id_by_path(p)
+            if image_id is None:
+                # Calculate hash for duplicate check
+                try:
+                    with open(p, "rb") as f:
+                        file_hash = hashlib.md5(f.read()).hexdigest()
+                    image_id = self.image_mgr.get_image_id_by_hash(file_hash)
+                except Exception:
+                    pass
+
+            # 2. If not in library, import it
+            if image_id is None:
+                if self.image_mgr.import_image(p):
+                    image_id = self.image_mgr.get_image_id_by_path(p)
+                    imported_count += 1
+                else:
+                    # Might be a duplicate name but different hash, or just failed
+                    # Check if it's a duplicate by hash again in case import_image returned false but it's there
+                    pass
+            
+            # 3. Add to canvas
+            actual_path = self.image_mgr.get_file_path_by_id(image_id) if image_id else p
+            if actual_path:
+                new_snaps.append(_ItemSnapshot.from_path(actual_path, x, y, image_id=image_id))
+                x += 20
+                y += 20
+
+        if new_snaps:
+            self._undo_stack.push(AddItemsCommand(self, new_snaps))
+            if imported_count > 0 and self._toast:
+                self._toast(f"Imported {imported_count} new image(s) to library")
+            self._schedule_save()
+            self._update_empty_hint()
+
+    def _apply_auto_arrange(self, mode: str) -> None:
+        items = self._selected_pixmap_items() or self._pixmap_items()
+        if not items:
+            return
+        
+        # 1. Sort items
+        sorted_list = sort_items(items, self.arrange_sort_by, self.image_mgr)
+        
+        # 2. Capture old positions
+        old_positions = [QPointF(item.pos()) for item in sorted_list]
+        
+        # 3. Calculate new positions
+        if mode == "grid":
+            new_positions = grid_layout(sorted_list)
+        elif mode == "horizontal":
+            new_positions = horizontal_layout(sorted_list)
+        elif mode == "vertical":
+            new_positions = vertical_layout(sorted_list)
+        elif mode == "pack":
+            new_positions = pack_layout(sorted_list)
+        elif mode == "grouped":
+            new_positions = grouped_layout(sorted_list, self.tag_mgr)
+        else:
+            return
+
+        # 4. Apply via Undo Command
+        self._undo_stack.push(
+            MoveItemsCommand(
+                sorted_list,
+                old_positions,
+                new_positions,
+                self._schedule_save,
+                text=f"Arrange: {mode.title()}"
+            )
+        )
+        self._fit_view()
+        if self._toast:
+            self._toast(f"Arranged {len(sorted_list)} images ({mode})")

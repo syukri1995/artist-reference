@@ -51,6 +51,12 @@ class ImageManager:
         thumb_path = self.thumbs_dir / f"{dest_path.stem}.webp"
         width, height = self._generate_thumbnail(str(dest_path), str(thumb_path))
 
+        if width == 0 or height == 0:
+            logger.error("Import failed: Could not generate thumbnail for %s (file might be corrupt)", dest_path.name)
+            if dest_path.exists():
+                os.remove(dest_path)
+            return False
+
         success = self._save_to_db(str(dest_path), str(thumb_path), width, height, file_hash)
         if not success:
             if dest_path.exists():
@@ -129,6 +135,18 @@ class ImageManager:
         except Exception as e:
             logger.error("get_file_path_by_id failed: %s", e)
             return None
+
+    def is_favorite(self, file_path: str) -> bool:
+        """Returns True if the image is marked as a favorite."""
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT is_favorite FROM images WHERE file_path = ?", (file_path,))
+            row = cursor.fetchone()
+            conn.close()
+            return bool(row["is_favorite"]) if row else False
+        except Exception:
+            return False
 
     def check_duplicate_by_hash(self, file_hash: str) -> str | None:
         """Checks if a file with the given hash already exists in the database. Returns filename if match."""
@@ -291,7 +309,9 @@ class ImageManager:
 
         query = (
             "SELECT DISTINCT i.id, i.file_path, i.thumbnail_path, i.width, i.height, "
-            "i.is_favorite, i.last_viewed, i.date_added FROM images i "
+            "i.is_favorite, i.last_viewed, i.date_added, i.ai_status, "
+            "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON it.tag_id = t.id WHERE it.image_id = i.id AND t.name IN ('Sensitive', 'Questionable')) as is_sensitive "
+            "FROM images i "
             + " ".join(joins)
         )
         if conditions:
@@ -320,7 +340,7 @@ class ImageManager:
         cursor.execute(
             """
             SELECT id, file_path, thumbnail_path, width, height, is_favorite,
-                   last_viewed, date_added, file_hash
+                   last_viewed, date_added, file_hash, ai_status
             FROM images WHERE id = ?
             """,
             (image_id,),

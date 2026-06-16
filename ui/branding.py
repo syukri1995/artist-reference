@@ -21,6 +21,12 @@ def asset_path(name: str) -> Path:
     return project_root() / "assets" / name
 
 
+def icon_path(name: str) -> str:
+    """Return the absolute path to an icon SVG file."""
+    path = project_root() / "assets" / "icons" / f"{name}.svg"
+    return str(path)
+
+
 def app_icon() -> QIcon:
     global _APP_ICON
     if _APP_ICON is not None:

@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QImage
 from PIL import Image
 
-from utils_image import pil_to_qpixmap
+from utils_image import pil_to_qimage
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +21,14 @@ DEFAULT_WORKER_COUNT = 6
 _FAST_RESAMPLE = Image.Resampling.BILINEAR
 
 
-def pixmap_from_file(
+def image_from_file(
     file_path: str,
     thumbnail_path: str | None = None,
     max_size: tuple[int, int] = (300, 300),
     *,
     preview_only: bool = False,
-) -> QPixmap | None:
-    """Decode an image file to QPixmap (safe to call off the UI thread).
+) -> QImage | None:
+    """Decode an image file to QImage (safe to call off the UI thread).
 
     When preview_only is True, only the thumbnail path is used — never the full image file.
     """
@@ -47,29 +47,29 @@ def pixmap_from_file(
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
             img.thumbnail(max_size, _FAST_RESAMPLE)
-            return pil_to_qpixmap(img)
+            return pil_to_qimage(img)
     except Exception as exc:
-        logger.debug("pixmap_from_file %s: %s", file_path, exc)
+        logger.debug("image_from_file %s: %s", file_path, exc)
         return None
 
 
-def pixmap_from_bytes(data: bytes, max_size: tuple[int, int] = (300, 300)) -> QPixmap | None:
+def image_from_bytes(data: bytes, max_size: tuple[int, int] = (300, 300)) -> QImage | None:
     try:
         import io
         with Image.open(io.BytesIO(data)) as img:
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
             img.thumbnail(max_size, _FAST_RESAMPLE)
-            return pil_to_qpixmap(img)
+            return pil_to_qimage(img)
     except Exception as exc:
-        logger.debug("pixmap_from_bytes: %s", exc)
+        logger.debug("image_from_bytes: %s", exc)
         return None
 
 
 class _QueueItem:
     __slots__ = ("generation", "key", "loader")
 
-    def __init__(self, generation: int, key: str, loader: Callable[[], QPixmap | None]) -> None:
+    def __init__(self, generation: int, key: str, loader: Callable[[], QImage | None]) -> None:
         self.generation = generation
         self.key = key
         self.loader = loader
@@ -126,32 +126,37 @@ class ImageLoadQueue(QObject):
     ) -> None:
         path, thumb, size, po = file_path, thumbnail_path, max_size, preview_only
 
-        def loader() -> QPixmap | None:
-            return pixmap_from_file(path, thumb, size, preview_only=po)
+        def loader() -> QImage | None:
+            return image_from_file(path, thumb, size, preview_only=po)
 
         self._enqueue(key, loader)
 
     def enqueue_bytes(self, key: str, data: bytes, max_size: tuple[int, int] = (300, 300)) -> None:
-        def loader() -> QPixmap | None:
-            return pixmap_from_bytes(data, max_size)
+        def loader() -> QImage | None:
+            return image_from_bytes(data, max_size)
 
         self._enqueue(key, loader)
 
-    def enqueue_callable(self, key: str, loader: Callable[[], QPixmap | None]) -> None:
+    def enqueue_callable(self, key: str, loader: Callable[[], QImage | None]) -> None:
         self._enqueue(key, loader)
 
-    def _enqueue(self, key: str, loader: Callable[[], QPixmap | None]) -> None:
+    def _enqueue(self, key: str, loader: Callable[[], QImage | None]) -> None:
         with self._lock:
             gen = self._generation
             self._total += 1
         self._work_q.put(_QueueItem(gen, key, loader))
 
-    def _on_result(self, key: str, pixmap: object, generation: int) -> None:
+    def _on_result(self, key: str, img: object, generation: int) -> None:
         with self._lock:
             if generation != self._generation:
                 return
             self._done += 1
-            done, total, gen = self._done, self._total, self._generation
+            done, total, _gen = self._done, self._total, self._generation
+        
+        pixmap = None
+        if isinstance(img, QImage):
+            pixmap = QPixmap.fromImage(img)
+            
         self.image_ready.emit(key, pixmap, generation)
         self.progress.emit(done, total, generation)
         if done >= total:
@@ -174,8 +179,8 @@ class _ImageLoadWorker(QThread):
             if item is None:
                 continue
             try:
-                pixmap = item.loader()
+                img = item.loader()
             except Exception as exc:
                 logger.debug("Image load %s failed: %s", item.key, exc)
-                pixmap = None
-            self.result.emit(item.key, pixmap, item.generation)
+                img = None
+            self.result.emit(item.key, img, item.generation)

@@ -34,7 +34,7 @@ class LoadingSpinner(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(QColor("#7C3AED"))
+        pen = QPen(QColor("#8B5CF6")) # Match TOKENS['accent']
         pen.setWidth(3)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
