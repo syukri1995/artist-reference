@@ -320,21 +320,31 @@ class ImageCard(QWidget):
         should_blur = self._is_sensitive and safe_mode
         
         # If we need to blur but don't have a baked blurred pixmap yet (e.g., live update),
-        # generate it on demand using OpenCV or PIL. For a quick UI thread fallback, we can use 
-        # a QGraphicsBlurEffect temporarily, or just blur it here if it's small.
-        # However, since QGraphicsBlurEffect caused issues, we will generate the QImage blur directly.
+        # generate it on demand using PIL to ensure exactly the same effect as the background worker.
         if should_blur and not self._blurred_pixmap:
-            from PyQt5.QtGui import QImage
-            # Convert QPixmap to QImage
-            img = self._pixmap.toImage()
-            # A simple box blur using QImage scaled (hacky but fast for thumbnails)
-            # or we can just use the ImageFilter logic if we import it.
-            # Actually, to be safe and avoid freezing the UI for a long time, 
-            # we can downscale it a lot, then upscale it with SmoothTransformation
-            ts = self.thumb.width() or self._card_width - 12
-            small = img.scaled(ts // 10, ts // 10, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            blurred_img = small.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self._blurred_pixmap = QPixmap.fromImage(blurred_img)
+            try:
+                from PIL import Image, ImageFilter
+                from utils_image import pil_to_qimage
+                import io
+                from PyQt5.QtCore import QBuffer, QIODevice
+                
+                # Convert QPixmap to QImage, then to PIL
+                qimg = self._pixmap.toImage()
+                buffer = QBuffer()
+                buffer.open(QIODevice.ReadWrite)
+                qimg.save(buffer, "PNG")
+                
+                pil_img = Image.open(io.BytesIO(buffer.data()))
+                if pil_img.mode not in ("RGB", "RGBA"):
+                    pil_img = pil_img.convert("RGB")
+                    
+                # Apply the exact same GaussianBlur as image_load_queue
+                blurred_img = pil_img.filter(ImageFilter.GaussianBlur(radius=20))
+                self._blurred_pixmap = QPixmap.fromImage(pil_to_qimage(blurred_img))
+            except Exception as e:
+                logger.error(f"Failed to generate on-demand blur: {e}")
+                # Fallback if PIL fails
+                self._blurred_pixmap = self._pixmap
 
         ts = self.thumb.width() or self._card_width - 12
         target_pix = self._blurred_pixmap if should_blur and self._blurred_pixmap else self._pixmap
