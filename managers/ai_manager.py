@@ -10,15 +10,34 @@ import os
 import gc
 from pathlib import Path
 
+# --- CRITICAL: Import ONNX Runtime BEFORE OpenCV to avoid DLL initialization conflicts ---
+try:
+    # Silence OpenCV C++ stderr logs to keep terminal clean
+    os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+    import onnxruntime as ort
+    ORT_AVAILABLE = True
+    ORT_ERROR = None
+except Exception as e:
+    ORT_AVAILABLE = False
+    ORT_ERROR = str(e)
+
 import cv2
 import numpy as np
 from PIL import Image
 
-try:
-    import onnxruntime as ort
-    ORT_AVAILABLE = True
-except Exception:
-    ORT_AVAILABLE = False
+# Print status immediately to terminal
+if not ORT_AVAILABLE:
+    print(f"!!! AI INFO: ONNX Runtime (GPU) is not available on this system.")
+    print("!!! AI INFO: (Tip: Installing 'Microsoft Visual C++ Redistributable 2019' usually fixes this).")
+    print("!!! AI INFO: Using native OpenCV engine instead. Scanning will be slightly slower.")
+else:
+    # Pre-check providers to ensure DLLs are actually working
+    try:
+        providers = ort.get_available_providers()
+    except Exception as e:
+        ORT_AVAILABLE = False
+        print(f"!!! AI WARNING: ONNX Runtime DLL failure: {e}")
+        print("!!! AI INFO: Using native OpenCV engine instead.")
 
 from database import get_connection, get_base_dir
 from managers.tag_manager import TagManager
@@ -118,8 +137,8 @@ class AIManager:
                 try:
                     if ORT_AVAILABLE:
                         logger.info("Loading DeepDanbooru (ONNX Runtime)...")
-                        # Use high-performance providers
-                        providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
+                        # Priority: DirectML (Windows GPU) > CUDA (NVIDIA GPU) > CPU
+                        providers = ['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
                         self.dd_session = ort.InferenceSession(str(self.dd_model_path), providers=providers)
                         active = self.dd_session.get_providers()
                         logger.info(f"DeepDanbooru ORT loaded with: {active}")
@@ -148,7 +167,7 @@ class AIManager:
             if ORT_AVAILABLE and self.falcons_session is None and self.falcons_model_path.exists():
                 try:
                     logger.info("Loading FalconsAI NSFW (ONNX Runtime)...")
-                    providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
+                    providers = ['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
                     self.falcons_session = ort.InferenceSession(str(self.falcons_model_path), providers=providers)
                     active_providers = self.falcons_session.get_providers()
                     if active_providers:
@@ -206,36 +225,26 @@ class AIManager:
                         outputs = self.dd_session.run(None, {input_name: img_data})
                         preds = outputs[0][0]
                     else:
-                        # OpenCV path (Fallback, often strictly NHWC)
-                        # Manual resize and normalization to handle models that reject NCHW blobs
+                        # OpenCV path (Fixed shape NHWC for DeepDanbooru compatibility)
+                        # This avoids the C++ getMemoryShapes exception entirely
                         img_resized = cv2.resize(img_cv, (512, 512))
                         img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                        img_float = img_rgb.astype(np.float32) / 255.0
-                        
-                        # Try NCHW first as it's the standard for OpenCV DNN
-                        blob = cv2.dnn.blobFromImage(img_cv, 1.0/255.0, (512, 512), (0,0,0), swapRB=True)
+                        blob = np.expand_dims(img_rgb.astype(np.float32) / 255.0, axis=0)
                         self.dd_net.setInput(blob)
-                        try:
-                            preds = self.dd_net.forward()[0]
-                        except cv2.error as e:
-                            if "input channels" in str(e):
-                                # Fallback to NHWC if the model is strictly fixed-shape NHWC
-                                blob_nhwc = np.expand_dims(img_float, axis=0)
-                                self.dd_net.setInput(blob_nhwc)
-                                preds = self.dd_net.forward()[0]
-                            else:
-                                raise e
+                        preds = self.dd_net.forward()[0]
 
                     for idx, prob in enumerate(preds):
-                        if prob >= self.threshold:
-                            tag_name = self.dd_tags[idx].replace('_', ' ').title()
-                            if tag_name.lower() == "rating:explicit":
-                                max_nsfw_score = max(max_nsfw_score, float(prob))
-                            elif tag_name.lower() == "rating:questionable":
-                                max_nsfw_score = max(max_nsfw_score, float(prob) * 0.8)
-                            
-                            if not tag_name.lower().startswith("rating:"):
-                                applied_tags.append((tag_name, float(prob)))
+                        tag_name = self.dd_tags[idx].replace('_', ' ').title()
+                        
+                        # Safety check is independent of general tag threshold
+                        if tag_name.lower() == "rating:explicit":
+                            max_nsfw_score = max(max_nsfw_score, float(prob))
+                        elif tag_name.lower() == "rating:questionable":
+                            max_nsfw_score = max(max_nsfw_score, float(prob) * 0.8)
+                        
+                        # General tags still respect the threshold
+                        if prob >= self.threshold and not tag_name.lower().startswith("rating:"):
+                            applied_tags.append((tag_name, float(prob)))
                 except Exception as e:
                     logger.error(f"DeepDanbooru failed: {e}")
 
@@ -282,11 +291,11 @@ class AIManager:
                 self.tag_mgr.tag_image_ai_batch(image_id, applied_tags)
             
             self._update_status(image_id, 'completed')
-            return True
+            return True, applied_tags
         except Exception as e:
             logger.error(f"AI Pipeline failed for {file_path}: {e}")
             self._update_status(image_id, 'failed')
-            return False
+            return False, []
 
     def _get_smart_metadata(self, path: Path) -> list[tuple[str, float]]:
         tags = []
@@ -367,13 +376,19 @@ class AIManager:
                     self._progress_callback(self._processed_count, self._processed_count + self._queue.qsize() + 1, iid, 'scanning')
                 
                 # Process the image
-                success = self.analyze_image(iid, path)
+                success, tags = self.analyze_image(iid, path)
                 self._processed_count += 1
                 
                 # Update progress (Result state)
                 if self._progress_callback:
                     status = 'completed' if success else 'failed'
-                    self._progress_callback(self._processed_count, self._processed_count + self._queue.qsize(), iid, status)
+                    self._progress_callback(
+                        self._processed_count, 
+                        self._processed_count + self._queue.qsize(), 
+                        iid, 
+                        status,
+                        tags=tags
+                    )
                 
                 self._queue.task_done()
                 
@@ -390,7 +405,8 @@ class AIManager:
 
     def scan_pending_images(self, stop_event: threading.Event = None, progress_callback=None, scan_all: bool = False):
         """Deprecated batch method - now redirects to the priority queue system."""
-        self._progress_callback = progress_callback
+        if progress_callback:
+            self._progress_callback = progress_callback
         try:
             conn = get_connection()
             cursor = conn.cursor()
@@ -404,4 +420,3 @@ class AIManager:
                 self.enqueue_images([(r['id'], r['file_path']) for r in rows], priority=False)
         except Exception as e:
             logger.error(f"Failed to fetch pending images: {e}")
-

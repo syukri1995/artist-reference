@@ -49,18 +49,35 @@ class LoadingStatusBar(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setFixedHeight(32)
+        self.setStyleSheet("background-color: #1E293B; border-top: 1px solid #334155;")
+        
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-        self.spinner = LoadingSpinner(22)
+        row.setContentsMargins(15, 0, 15, 0)
+        row.setSpacing(10)
+        
+        self.spinner = LoadingSpinner(18)
         row.addWidget(self.spinner)
+        
         self.label = QLabel("")
-        self.label.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        self.label.setStyleSheet("color: #E2E8F0; font-size: 11px; font-weight: 600;")
         row.addWidget(self.label, stretch=1)
+        
         self.progress = QProgressBar()
-        self.progress.setFixedWidth(140)
+        self.progress.setFixedWidth(180)
         self.progress.setTextVisible(False)
-        self.progress.setMaximumHeight(8)
+        self.progress.setMaximumHeight(6)
+        self.progress.setStyleSheet("""
+            QProgressBar {
+                background-color: #0F172A;
+                border: none;
+                border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background-color: #8B5CF6;
+                border-radius: 3px;
+            }
+        """)
         self.progress.hide()
         row.addWidget(self.progress)
         self.hide()

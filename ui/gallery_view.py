@@ -64,6 +64,7 @@ class ImageCard(QWidget):
         self._is_favorite = is_favorite
         self._is_sensitive = False
         self._pixmap = None
+        self._blurred_pixmap = None
         self._card_width = card_size
         self._bg_color = QColor("#1E1B4B") # Initial pending color
         
@@ -140,11 +141,6 @@ class ImageCard(QWidget):
         self.thumb_inner.addWidget(self.thumb, alignment=Qt.AlignCenter)
         self.root_layout.addWidget(self.thumb_wrap)
 
-        # Blur effect for sensitive content
-        self._blur_effect = QGraphicsBlurEffect(self.thumb)
-        self._blur_effect.setBlurRadius(25)
-        self._blur_effect.setEnabled(False)
-
         # Meta Info
         self.info_row = QHBoxLayout()
         self.info_row.setContentsMargins(4, 0, 4, 0)
@@ -215,7 +211,9 @@ class ImageCard(QWidget):
         
         if self._pixmap:
             ts = self.thumb.width()
-            self.thumb.setPixmap(self._pixmap.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            target_pix = self._blurred_pixmap if self._is_sensitive and get_settings().get_safe_mode() else self._pixmap
+            if target_pix:
+                self.thumb.setPixmap(target_pix.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         
         self.set_selected(self._selected)
 
@@ -228,16 +226,20 @@ class ImageCard(QWidget):
             if self._pixmap and self._ai_status != 'scanning':
                 self.thumb.show()
 
-    def set_pixmap(self, pixmap: QPixmap) -> None:
-        """Set the pixmap and trigger the initial fade-in animation."""
-        if pixmap is None or pixmap.isNull():
+    def set_pixmap(self, pixmap_data: QPixmap | tuple[QPixmap, QPixmap]) -> None:
+        """Set the pixmap(s) and trigger the initial fade-in animation."""
+        if isinstance(pixmap_data, tuple):
+            self._pixmap, self._blurred_pixmap = pixmap_data
+        else:
+            self._pixmap = pixmap_data
+            self._blurred_pixmap = None
+
+        if self._pixmap is None or self._pixmap.isNull():
             self.set_load_failed()
             return
             
-        self._pixmap = pixmap
         self.set_loading(False)
-        ts = self.thumb.width() or self._card_width - 12
-        self.thumb.setPixmap(pixmap.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._update_safety_visuals()
         
         if self._ai_status != 'scanning':
             self.thumb.show()
@@ -253,7 +255,9 @@ class ImageCard(QWidget):
             self._fade_anim.start()
 
     def _on_fade_finished(self) -> None:
-        self._update_safety_visuals()
+        # Clear the opacity effect so it doesn't block future visuals
+        if self.thumb.graphicsEffect():
+            self.thumb.setGraphicsEffect(None)
 
     def set_load_failed(self) -> None:
         self.set_loading(False)
@@ -304,20 +308,39 @@ class ImageCard(QWidget):
                 self._spinner.start()
             self.set_selected(self._selected)
         
-        if tags:
+        if tags is not None:
             self._is_sensitive = any(t['name'] in ("Sensitive", "Questionable") for t in tags)
             self._update_safety_visuals()
 
     def _update_safety_visuals(self) -> None:
+        if not self._pixmap:
+            return
+
         safe_mode = get_settings().get_safe_mode()
         should_blur = self._is_sensitive and safe_mode
-        if should_blur:
-            blur = QGraphicsBlurEffect()
-            blur.setBlurRadius(25)
-            self.thumb.setGraphicsEffect(blur)
-        else:
-            if self.thumb.graphicsEffect():
-                self.thumb.setGraphicsEffect(None)
+        
+        # If we need to blur but don't have a baked blurred pixmap yet (e.g., live update),
+        # generate it on demand using OpenCV or PIL. For a quick UI thread fallback, we can use 
+        # a QGraphicsBlurEffect temporarily, or just blur it here if it's small.
+        # However, since QGraphicsBlurEffect caused issues, we will generate the QImage blur directly.
+        if should_blur and not self._blurred_pixmap:
+            from PyQt5.QtGui import QImage
+            # Convert QPixmap to QImage
+            img = self._pixmap.toImage()
+            # A simple box blur using QImage scaled (hacky but fast for thumbnails)
+            # or we can just use the ImageFilter logic if we import it.
+            # Actually, to be safe and avoid freezing the UI for a long time, 
+            # we can downscale it a lot, then upscale it with SmoothTransformation
+            ts = self.thumb.width() or self._card_width - 12
+            small = img.scaled(ts // 10, ts // 10, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            blurred_img = small.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._blurred_pixmap = QPixmap.fromImage(blurred_img)
+
+        ts = self.thumb.width() or self._card_width - 12
+        target_pix = self._blurred_pixmap if should_blur and self._blurred_pixmap else self._pixmap
+        
+        if target_pix:
+            self.thumb.setPixmap(target_pix.scaled(ts, ts, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -842,7 +865,12 @@ class GalleryView(QWidget):
                 if col >= self.columns:
                     col, row = 0, row + 1
                 
-                self._load_queue.enqueue_file(path, path, data.get("thumbnail_path"), (size, size))
+                self._load_queue.enqueue_file(
+                    path, 
+                    path, 
+                    data.get("thumbnail_path"), 
+                    (size, size)
+                )
 
             self._refresh_sidebar_data()
         except Exception as e:
@@ -897,18 +925,29 @@ class GalleryView(QWidget):
         if path in self._cards:
             self._cards[path].set_pixmap(pixmap)
 
-    def set_ai_scan_progress(self, current: int, total: int, image_id: int = None, status: str = 'scanning') -> None:
+    def set_ai_scan_progress(self, current: int, total: int, image_id: int = None, status: str = 'scanning', tags=None) -> None:
         if total > 0:
             percent = int((current / total) * 100)
             self._load_status.set_progress(current, total, f"AI Scanning\u2026 {percent}%")
             if image_id is not None:
                 target_id = int(image_id)
+                # Convert tags from list of tuples (name, confidence) to list of dicts for ImageCard
+                formatted_tags = []
+                if tags:
+                    formatted_tags = [{"name": t[0], "confidence": t[1]} for t in tags]
+
                 for p, mid in self.path_to_id.items():
                     if int(mid) == target_id and p in self._cards:
                         card = self._cards[p]
-                        card.set_ai_status(status)
+                        card.set_ai_status(status, tags=formatted_tags)
                         if status == 'scanning':
                             self.gallery_scroll.ensureWidgetVisible(card)
+                        
+                        # Refresh details if this card is currently selected
+                        if status == 'completed' and p in self.selected_images:
+                            self._update_detail_panel(target_id)
+                            self._refresh_sidebar_data()
+
             if current >= total and status == 'idle':
                 QTimer.singleShot(2000, self._load_status.hide_idle)
         else:

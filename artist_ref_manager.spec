@@ -70,9 +70,13 @@ hiddenimports = [
     "PyQt5.sip",
     "PIL",
     "PIL.Image",
+    "PIL.ImageFilter",
     "certifi",
     "requests",
     "sqlite3",
+    "cv2",
+    "numpy",
+    "onnxruntime",
 ]
 
 a = Analysis(

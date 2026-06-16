@@ -10,7 +10,7 @@ from typing import Callable
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from utils_image import pil_to_qimage
 
@@ -27,10 +27,9 @@ def image_from_file(
     max_size: tuple[int, int] = (300, 300),
     *,
     preview_only: bool = False,
-) -> QImage | None:
+) -> tuple[QImage, QImage] | None:
     """Decode an image file to QImage (safe to call off the UI thread).
-
-    When preview_only is True, only the thumbnail path is used — never the full image file.
+    Returns a tuple (normal_qimg, blurred_qimg).
     """
     try:
         if preview_only:
@@ -47,20 +46,30 @@ def image_from_file(
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
             img.thumbnail(max_size, _FAST_RESAMPLE)
-            return pil_to_qimage(img)
+            
+            normal_qim = pil_to_qimage(img)
+            # Always generate blurred version (cheap for thumbnails)
+            blurred_img = img.filter(ImageFilter.GaussianBlur(radius=20))
+            return normal_qim, pil_to_qimage(blurred_img)
     except Exception as exc:
         logger.debug("image_from_file %s: %s", file_path, exc)
         return None
 
 
-def image_from_bytes(data: bytes, max_size: tuple[int, int] = (300, 300)) -> QImage | None:
+def image_from_bytes(
+    data: bytes, 
+    max_size: tuple[int, int] = (300, 300)
+) -> tuple[QImage, QImage] | None:
     try:
         import io
         with Image.open(io.BytesIO(data)) as img:
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
             img.thumbnail(max_size, _FAST_RESAMPLE)
-            return pil_to_qimage(img)
+            
+            normal_qim = pil_to_qimage(img)
+            blurred_img = img.filter(ImageFilter.GaussianBlur(radius=20))
+            return normal_qim, pil_to_qimage(blurred_img)
     except Exception as exc:
         logger.debug("image_from_bytes: %s", exc)
         return None
@@ -126,21 +135,26 @@ class ImageLoadQueue(QObject):
     ) -> None:
         path, thumb, size, po = file_path, thumbnail_path, max_size, preview_only
 
-        def loader() -> QImage | None:
+        def loader() -> tuple[QImage, QImage] | None:
             return image_from_file(path, thumb, size, preview_only=po)
 
         self._enqueue(key, loader)
 
-    def enqueue_bytes(self, key: str, data: bytes, max_size: tuple[int, int] = (300, 300)) -> None:
-        def loader() -> QImage | None:
+    def enqueue_bytes(
+        self, 
+        key: str, 
+        data: bytes, 
+        max_size: tuple[int, int] = (300, 300),
+    ) -> None:
+        def loader() -> tuple[QImage, QImage] | None:
             return image_from_bytes(data, max_size)
 
         self._enqueue(key, loader)
 
-    def enqueue_callable(self, key: str, loader: Callable[[], QImage | None]) -> None:
+    def enqueue_callable(self, key: str, loader: Callable[[], tuple[QImage, QImage] | None]) -> None:
         self._enqueue(key, loader)
 
-    def _enqueue(self, key: str, loader: Callable[[], QImage | None]) -> None:
+    def _enqueue(self, key: str, loader: Callable[[], tuple[QImage, QImage] | None]) -> None:
         with self._lock:
             gen = self._generation
             self._total += 1
@@ -153,11 +167,16 @@ class ImageLoadQueue(QObject):
             self._done += 1
             done, total, _gen = self._done, self._total, self._generation
         
-        pixmap = None
+        result_pixmap = None
         if isinstance(img, QImage):
-            pixmap = QPixmap.fromImage(img)
+            result_pixmap = QPixmap.fromImage(img)
+        elif isinstance(img, tuple) and len(img) == 2:
+            # Handle (normal_qimg, blurred_qimg)
+            normal_pix = QPixmap.fromImage(img[0])
+            blurred_pix = QPixmap.fromImage(img[1])
+            result_pixmap = (normal_pix, blurred_pix)
             
-        self.image_ready.emit(key, pixmap, generation)
+        self.image_ready.emit(key, result_pixmap, generation)
         self.progress.emit(done, total, generation)
         if done >= total:
             self.queue_empty.emit(generation)

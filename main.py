@@ -177,12 +177,12 @@ class Application(QMainWindow):
         self.ai_manager = AIManager()
         self.ai_manager._progress_callback = self._on_ai_progress
 
-    def _on_ai_progress(self, current, total, image_id=None, status='scanning'):
+    def _on_ai_progress(self, current, total, image_id=None, status='scanning', tags=None):
         """Handle progress updates from the AI Manager."""
         # Update Gallery UI (thread-safe via QTimer)
         # Capture current values in lambda defaults to avoid closure issues
-        QTimer.singleShot(0, lambda c=current, t=total, i=image_id, s=status: 
-                          self.gallery_view.set_ai_scan_progress(c, t, i, s))
+        QTimer.singleShot(0, lambda c=current, t=total, i=image_id, s=status, tg=tags: 
+                          self.gallery_view.set_ai_scan_progress(c, t, i, s, tags=tg))
         
         # Update Settings Dialog if open
         from PyQt5.QtWidgets import QDialog
