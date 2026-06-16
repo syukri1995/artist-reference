@@ -99,28 +99,37 @@ class TagManager:
 
     def tag_image_ai(self, image_id: int, tag_name: str, confidence: float) -> bool:
         """Apply an AI-generated tag to an image."""
+        return self.tag_image_ai_batch(image_id, [(tag_name, confidence)])
+
+    def tag_image_ai_batch(self, image_id: int, tags: list[tuple[str, float]]) -> bool:
+        """Apply multiple AI-generated tags to an image in a single transaction."""
+        if not tags:
+            return True
         try:
             conn = get_connection()
             cursor = conn.cursor()
             
-            # Ensure tag exists
-            cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
-            cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
-            row = cursor.fetchone()
-            if not row:
-                return False
-            tag_id = row["id"]
+            tag_links = []
+            for tag_name, confidence in tags:
+                # Ensure tag exists
+                cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+                cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+                row = cursor.fetchone()
+                if row:
+                    tag_id = row["id"]
+                    tag_links.append((image_id, tag_id, confidence))
             
-            # Link with AI flag and confidence
-            cursor.execute('''
-                INSERT OR REPLACE INTO image_tags (image_id, tag_id, is_ai, confidence)
-                VALUES (?, ?, 1, ?)
-            ''', (image_id, tag_id, confidence))
+            if tag_links:
+                # Link with AI flag and confidence
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO image_tags (image_id, tag_id, is_ai, confidence)
+                    VALUES (?, ?, 1, ?)
+                ''', tag_links)
             
             conn.commit()
             return True
         except Exception as e:
-            logger.error(f"Failed to apply AI tag: {e}")
+            logger.error(f"Failed to apply AI tags batch: {e}")
             return False
 
     def remove_all_tags_from_image(self, image_id: int) -> bool:

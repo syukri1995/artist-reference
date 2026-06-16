@@ -7,6 +7,7 @@ import re
 import time
 import queue
 import os
+import gc
 from pathlib import Path
 
 import cv2
@@ -63,6 +64,8 @@ class AIManager:
         self._progress_callback = None
         self._processed_count = 0
         self._total_in_batch = 0
+        self._idle_start_time = None
+        self.IDLE_UNLOAD_TIMEOUT = 60 # seconds
 
     def get_hardware_status(self) -> str:
         """Returns a formatted string representing the active AI backends."""
@@ -102,6 +105,9 @@ class AIManager:
 
     def _load_models(self):
         """Lazy load AI models into memory."""
+        # Reset idle timer when we need models
+        self._idle_start_time = None
+        
         # Ensure OpenCL logs don't clutter terminal if we haven't disabled them yet
         if os.environ.get("OPENCV_OCL4DNN_DISABLE_OPCL") != "1":
             cv2.ocl.setUseOpenCL(False) # Default to off for stability unless we explicitly want it later
@@ -151,6 +157,19 @@ class AIManager:
                 except Exception as e:
                     logger.error(f"Failed to load FalconsAI: {e}")
                     self.falcons_session = None
+
+    def unload_models(self):
+        """Releases AI model objects from memory to free RAM/VRAM."""
+        with self._lock:
+            logger.info("Unloading AI models from memory (Idle timeout)...")
+            self.dd_net = None
+            self.dd_session = None
+            self.nsfw_net = None
+            self.falcons_session = None
+            self.active_cv2_backend = "CPU"
+            self.active_ort_provider = "CPU"
+            # Explicit garbage collection
+            gc.collect()
 
     def analyze_image(self, image_id: int, file_path: str) -> bool:
         """Runs the image through the tagging pipeline."""
@@ -216,8 +235,7 @@ class AIManager:
                                 max_nsfw_score = max(max_nsfw_score, float(prob) * 0.8)
                             
                             if not tag_name.lower().startswith("rating:"):
-                                self.tag_mgr.tag_image_ai(image_id, tag_name, float(prob))
-                                applied_tags.append(tag_name)
+                                applied_tags.append((tag_name, float(prob)))
                 except Exception as e:
                     logger.error(f"DeepDanbooru failed: {e}")
 
@@ -252,12 +270,16 @@ class AIManager:
 
             # --- Safety Decision ---
             if max_nsfw_score > 0.8:
-                self.tag_mgr.tag_image_ai(image_id, "Sensitive", max_nsfw_score)
+                applied_tags.append(("Sensitive", max_nsfw_score))
             elif max_nsfw_score > 0.5:
-                self.tag_mgr.tag_image_ai(image_id, "Questionable", max_nsfw_score)
+                applied_tags.append(("Questionable", max_nsfw_score))
 
             # --- Stage 4: Smart Metadata ---
-            self._apply_smart_metadata(image_id, path)
+            applied_tags.extend(self._get_smart_metadata(path))
+            
+            # --- Commit All Tags in One Batch ---
+            if applied_tags:
+                self.tag_mgr.tag_image_ai_batch(image_id, applied_tags)
             
             self._update_status(image_id, 'completed')
             return True
@@ -266,19 +288,21 @@ class AIManager:
             self._update_status(image_id, 'failed')
             return False
 
-    def _apply_smart_metadata(self, image_id: int, path: Path):
+    def _get_smart_metadata(self, path: Path) -> list[tuple[str, float]]:
+        tags = []
         try:
             words = re.findall(r'[a-zA-Z]+', path.stem)
             for word in words:
                 if len(word) > 3:
-                    self.tag_mgr.tag_image_ai(image_id, word.title(), 0.9)
+                    tags.append((word.title(), 0.9))
             with Image.open(path) as img:
                 w, h = img.size
-                if w > h * 1.5: self.tag_mgr.tag_image_ai(image_id, "Panoramic", 0.9)
-                elif h > w * 1.2: self.tag_mgr.tag_image_ai(image_id, "Portrait", 0.9)
-                else: self.tag_mgr.tag_image_ai(image_id, "Landscape", 0.9)
-        except:
-            pass
+                if w > h * 1.5: tags.append(("Panoramic", 0.9))
+                elif h > w * 1.2: tags.append(("Portrait", 0.9))
+                else: tags.append(("Landscape", 0.9))
+        except Exception as e:
+            logger.error(f"Smart metadata extraction failed for {path.name}: {e}")
+        return tags
 
     def _update_status(self, image_id: int, status: str):
         try:
@@ -315,12 +339,29 @@ class AIManager:
         """Persistent background thread that processes the priority queue."""
         logger.info("AI Worker thread started.")
         self._processed_count = 0
+        self._idle_start_time = None
         
         while not self._stop_event.is_set():
             try:
-                # Wait for a task (1s timeout to check stop_event)
-                prio, ts, iid, path = self._queue.get(timeout=1.0)
-                
+                # Wait for a task (1s timeout to check stop_event and handle idle)
+                try:
+                    prio, ts, iid, path = self._queue.get(timeout=1.0)
+                    self._idle_start_time = None # Reset idle timer on task
+                except queue.Empty:
+                    if self._queue.empty():
+                        if self._progress_callback and self._processed_count > 0:
+                            self._progress_callback(self._processed_count, self._processed_count, None, 'idle')
+                            self._processed_count = 0 # Reset for next batch
+                        
+                        # Handle idle timeout
+                        if self.dd_net or self.dd_session or self.nsfw_net or self.falcons_session:
+                            if self._idle_start_time is None:
+                                self._idle_start_time = time.time()
+                            elif time.time() - self._idle_start_time > self.IDLE_UNLOAD_TIMEOUT:
+                                self.unload_models()
+                                self._idle_start_time = None
+                    continue
+
                 # Update progress (Scanning state)
                 if self._progress_callback:
                     self._progress_callback(self._processed_count, self._processed_count + self._queue.qsize() + 1, iid, 'scanning')
@@ -339,13 +380,6 @@ class AIManager:
                 # Cooling delay to prevent hardware fatigue
                 time.sleep(0.15)
                 
-            except queue.Empty:
-                if self._queue.empty():
-                    if self._progress_callback and self._processed_count > 0:
-                        self._progress_callback(self._processed_count, self._processed_count, None, 'idle')
-                        self._processed_count = 0 # Reset for next batch
-                    # Optional: Exit thread if idle for too long, but for now we keep it alive
-                    continue
             except Exception as e:
                 logger.error(f"AI Worker loop error: {e}")
 
