@@ -17,7 +17,7 @@ class TagManager:
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to create tag: {e}")
+            logger.error(f"Failed to create tag: {e}")
             return False
 
     def get_tags(self):
@@ -58,7 +58,7 @@ class TagManager:
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to tag images: {e}")
+            logger.error(f"Failed to tag images: {e}")
             return False
 
     def remove_tag_from_image(self, image_id: int, tag_id: int) -> bool:
@@ -75,7 +75,7 @@ class TagManager:
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to untag images: {e}")
+            logger.error(f"Failed to untag images: {e}")
             return False
 
     def get_tag_by_name(self, name: str):
@@ -108,7 +108,7 @@ class TagManager:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            
+
             tag_links = []
             for tag_name, confidence in tags:
                 # Ensure tag exists
@@ -118,14 +118,14 @@ class TagManager:
                 if row:
                     tag_id = row["id"]
                     tag_links.append((image_id, tag_id, confidence))
-            
+
             if tag_links:
                 # Link with AI flag and confidence
                 cursor.executemany('''
                     INSERT OR REPLACE INTO image_tags (image_id, tag_id, is_ai, confidence)
                     VALUES (?, ?, 1, ?)
                 ''', tag_links)
-            
+
             conn.commit()
             return True
         except Exception as e:
@@ -140,7 +140,7 @@ class TagManager:
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to remove all tags from image: {e}")
+            logger.error(f"Failed to remove all tags from image: {e}")
             return False
 
     def apply_danbooru_tags_to_image(self, image_id: int, tag_names: list[str]) -> int:
@@ -190,7 +190,7 @@ class TagManager:
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to add tags to image: {e}")
+            logger.error(f"Failed to add tags to image: {e}")
             return False
 
     def delete_tag(self, tag_id: int) -> bool:
@@ -204,5 +204,5 @@ class TagManager:
             conn.commit()
             return True
         except Exception as e:
-            print(f"Failed to delete global tag: {e}")
+            logger.error(f"Failed to delete global tag: {e}")
             return False
