@@ -159,12 +159,14 @@ class TagManager:
             conn = get_connection()
             cursor = conn.cursor()
             tag_ids: list[int] = []
-            for name in unique:
-                cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
-                cursor.execute("SELECT id FROM tags WHERE name = ?", (name,))
-                row = cursor.fetchone()
-                if row:
-                    tag_ids.append(int(row["id"]))
+            cursor.executemany("INSERT OR IGNORE INTO tags (name) VALUES (?)", [(name,) for name in unique])
+            chunk_size = 900
+            for i in range(0, len(unique), chunk_size):
+                chunk = unique[i:i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                cursor.execute(f"SELECT id FROM tags WHERE name IN ({placeholders})", chunk)
+                rows = cursor.fetchall()
+                tag_ids.extend([int(row["id"]) for row in rows])
             if tag_ids:
                 cursor.executemany(
                     "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
