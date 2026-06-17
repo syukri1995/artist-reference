@@ -103,11 +103,16 @@ class TagManager:
 
     def tag_image_ai_batch(self, image_id: int, tags: list[tuple[str, float]]) -> bool:
         """Apply multiple AI-generated tags to an image in a single transaction."""
-        if not tags:
-            return True
         try:
             conn = get_connection()
             cursor = conn.cursor()
+
+            # Always clear existing AI tags before applying new ones to handle re-scans
+            cursor.execute("DELETE FROM image_tags WHERE image_id = ? AND is_ai = 1", (image_id,))
+
+            if not tags:
+                conn.commit()
+                return True
 
             tag_links = []
             for tag_name, confidence in tags:

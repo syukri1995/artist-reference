@@ -287,8 +287,8 @@ class AIManager:
             applied_tags.extend(self._get_smart_metadata(path))
             
             # --- Commit All Tags in One Batch ---
-            if applied_tags:
-                self.tag_mgr.tag_image_ai_batch(image_id, applied_tags)
+            # We must ALWAYS call this even if empty to clear old tags on rescan
+            self.tag_mgr.tag_image_ai_batch(image_id, applied_tags)
             
             self._update_status(image_id, 'completed')
             return True, applied_tags

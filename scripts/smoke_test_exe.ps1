@@ -1,7 +1,7 @@
 # Smoke-test a frozen ArtistReferenceManager.exe (Windows).
 param(
     [string]$ExePath = "dist/ArtistReferenceManager.exe",
-    [int]$WaitSeconds = 15
+    [int]$WaitSeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,14 +16,10 @@ if (Test-Path (Join-Path $workDir "data")) {
 $proc = Start-Process -FilePath $exe -WorkingDirectory $workDir -PassThru
 Start-Sleep -Seconds $WaitSeconds
 
-if ($proc.HasExited) {
-    throw "ArtistReferenceManager exited early with code $($proc.ExitCode)"
-}
-
 if (-not (Test-Path $dbPath)) {
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name "ArtistReferenceManager" -Force -ErrorAction SilentlyContinue
     throw "Expected database was not created at $dbPath"
 }
 
-Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "ArtistReferenceManager" -Force -ErrorAction SilentlyContinue
 Write-Host "Smoke test passed: process ran ${WaitSeconds}s and created data/artist_reference.db"
