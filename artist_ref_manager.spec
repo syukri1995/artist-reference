@@ -62,6 +62,7 @@ datas = [
     (str(_qt_imageformats / "qjpeg.dll"), "PyQt5/Qt5/plugins/imageformats"),
     (str(_qt_imageformats / "qgif.dll"), "PyQt5/Qt5/plugins/imageformats"),
     (str(_qt_imageformats / "qico.dll"), "PyQt5/Qt5/plugins/imageformats"),
+    (str(_qt_imageformats / "qwebp.dll"), "PyQt5/Qt5/plugins/imageformats"),
 ]
 
 binaries = _openssl_binaries()
@@ -71,6 +72,8 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "PIL.ImageFilter",
+    "PIL._webp",
+    "PIL.WebPImagePlugin",
     "certifi",
     "requests",
     "sqlite3",
