@@ -215,6 +215,7 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(QLabel("Username"))
         self.danbooru_login_edit = QLineEdit()
+        self.danbooru_login_edit.setClearButtonEnabled(True)
         self.danbooru_login_edit.setPlaceholderText("Your Danbooru username")
         self.danbooru_login_edit.setText(self._settings.get_danbooru_login())
         layout.addWidget(self.danbooru_login_edit)
