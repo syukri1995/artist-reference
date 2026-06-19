@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
     QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout,
-    QWidget, QGraphicsBlurEffect, QGraphicsOpacityEffect
+    QWidget, QGraphicsBlurEffect, QGraphicsOpacityEffect, QProgressBar
 )
 
 from app_settings import get_settings
@@ -121,6 +121,29 @@ class ImageCard(QWidget):
         self._scanning_spinner = LoadingSpinner(64, self._spinning_status_container)
         self._scanning_spinner.hide()
         
+        # Progress bar for scanning progress
+        self.scan_progress = QProgressBar(self._spinning_status_container)
+        self.scan_progress.setRange(0, 100)
+        self.scan_progress.setValue(0)
+        self.scan_progress.setTextVisible(True)
+        self.scan_progress.setFormat("%p%")
+        self.scan_progress.setStyleSheet("""
+            QProgressBar {
+                background-color: #0F172A;
+                border: 2px solid #00F2FF;
+                border-radius: 4px;
+                text-align: center;
+                font-weight: bold;
+                color: #00F2FF;
+            }
+            QProgressBar::chunk {
+                background-color: #00F2FF;
+                border-radius: 3px;
+            }
+        """)
+        self.scan_progress.setFixedHeight(20)
+        self.scan_progress.hide()
+        
         self.scanning_label = QLabel("SCANNING...", self._spinning_status_container)
         self.scanning_label.setAlignment(Qt.AlignCenter)
         self.scanning_label.setStyleSheet("""
@@ -131,6 +154,7 @@ class ImageCard(QWidget):
         
         self._spinner_layout.addWidget(self._scanning_spinner, alignment=Qt.AlignCenter)
         self._spinner_layout.addWidget(self.scanning_label, alignment=Qt.AlignCenter)
+        self._spinner_layout.addWidget(self.scan_progress, alignment=Qt.AlignCenter)
         
         self.thumb = QLabel()
         self.thumb.setAlignment(Qt.AlignCenter)
@@ -202,6 +226,9 @@ class ImageCard(QWidget):
         sw = max(32, thumb_size // 3)
         self._scanning_spinner.setFixedSize(sw, sw)
         self._spinning_status_container.setFixedSize(thumb_size, thumb_size)
+        
+        # Size progress bar
+        self.scan_progress.setFixedWidth(thumb_size - 16)
         
         name = Path(self.file_path).name
         limit = max(10, size // 10)
@@ -285,12 +312,14 @@ class ImageCard(QWidget):
             self._spinning_status_container.show()
             self._scanning_spinner.show()
             self._scanning_spinner.start()
+            self.scan_progress.show()
             self.thumb.hide()
             self._spinner.hide()
             self._animate_to_color(self.COLORS['scanning'])
         elif status == 'failed':
             self.scanning_label.hide()
             self._scanning_spinner.stop()
+            self.scan_progress.hide()
             self._spinning_status_container.hide()
             self.thumb.hide()
             self._spinner.hide()
@@ -298,6 +327,7 @@ class ImageCard(QWidget):
         else:
             self.scanning_label.hide()
             self._scanning_spinner.stop()
+            self.scan_progress.hide()
             self._spinning_status_container.hide()
             if self._pixmap:
                 self.thumb.show()
@@ -311,6 +341,13 @@ class ImageCard(QWidget):
         if tags is not None:
             self._is_sensitive = any(t['name'] in ("Sensitive", "Questionable") for t in tags)
             self._update_safety_visuals()
+
+    def set_scan_progress(self, current: int, total: int) -> None:
+        """Update the progress bar during AI scanning."""
+        if total > 0:
+            percentage = int((current / total) * 100)
+            self.scan_progress.setValue(percentage)
+            self.scan_progress.setFormat(f"{current}/{total} (%p%)")
 
     def _update_safety_visuals(self) -> None:
         if not self._pixmap:
@@ -973,6 +1010,9 @@ class GalleryView(QWidget):
                 if int(mid) == target_id and p in self._cards:
                     card = self._cards[p]
                     card.set_ai_status(status, tags=formatted_tags)
+                    # Update progress bar on the card during scanning
+                    if status == 'scanning' and total > 0:
+                        card.set_scan_progress(current, total)
                     if status == 'scanning':
                         self.gallery_scroll.ensureWidgetVisible(card)
                     
