@@ -25,24 +25,25 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# Print status immediately to terminal
+# Logging setup
+logger = logging.getLogger(__name__)
+
+# Print status to logger instead of terminal to avoid console pop-ups
 if not ORT_AVAILABLE:
-    print(f"!!! AI INFO: ONNX Runtime (GPU) is not available on this system.")
-    print("!!! AI INFO: (Tip: Installing 'Microsoft Visual C++ Redistributable 2019' usually fixes this).")
-    print("!!! AI INFO: Using native OpenCV engine instead. Scanning will be slightly slower.")
+    logger.info("AI INFO: ONNX Runtime (GPU) is not available on this system.")
+    logger.info("AI INFO: (Tip: Installing 'Microsoft Visual C++ Redistributable 2019' usually fixes this).")
+    logger.info("AI INFO: Using native OpenCV engine instead. Scanning will be slightly slower.")
 else:
     # Pre-check providers to ensure DLLs are actually working
     try:
         providers = ort.get_available_providers()
     except Exception as e:
         ORT_AVAILABLE = False
-        print(f"!!! AI WARNING: ONNX Runtime DLL failure: {e}")
-        print("!!! AI INFO: Using native OpenCV engine instead.")
+        logger.warning(f"AI WARNING: ONNX Runtime DLL failure: {e}")
+        logger.info("AI INFO: Using native OpenCV engine instead.")
 
 from database import get_connection, get_base_dir
 from managers.tag_manager import TagManager
-
-logger = logging.getLogger(__name__)
 
 class AIManager:
     """
@@ -278,9 +279,9 @@ class AIManager:
                     logger.error(f"OpenNSFW failed: {e}")
 
             # --- Safety Decision ---
-            if max_nsfw_score > 0.8:
+            if max_nsfw_score > 0.5:
                 applied_tags.append(("Sensitive", max_nsfw_score))
-            elif max_nsfw_score > 0.5:
+            elif max_nsfw_score > 0.3:
                 applied_tags.append(("Questionable", max_nsfw_score))
 
             # --- Stage 4: Smart Metadata ---
@@ -314,13 +315,15 @@ class AIManager:
         return tags
 
     def _update_status(self, image_id: int, status: str):
+        conn = get_connection()
         try:
-            conn = get_connection()
             cursor = conn.cursor()
             cursor.execute("UPDATE images SET ai_status = ? WHERE id = ?", (status, image_id))
             conn.commit()
         except Exception as e:
             logger.error(f"Failed to update status: {e}")
+        finally:
+            conn.close()
 
     def enqueue_images(self, image_data: list, priority: bool = False):
         """
@@ -373,7 +376,7 @@ class AIManager:
 
                 # Update progress (Scanning state)
                 if self._progress_callback:
-                    self._progress_callback(self._processed_count, self._processed_count + self._queue.qsize() + 1, iid, 'scanning')
+                    self._progress_callback(self._processed_count, self._processed_count + self._queue.qsize() + 1, iid, 'scanning', priority=(prio == 0))
                 
                 # Process the image
                 success, tags = self.analyze_image(iid, path)
@@ -387,7 +390,8 @@ class AIManager:
                         self._processed_count + self._queue.qsize(), 
                         iid, 
                         status,
-                        tags=tags
+                        tags=tags,
+                        priority=(prio == 0)
                     )
                 
                 self._queue.task_done()
@@ -407,16 +411,18 @@ class AIManager:
         """Deprecated batch method - now redirects to the priority queue system."""
         if progress_callback:
             self._progress_callback = progress_callback
+        conn = get_connection()
         try:
-            conn = get_connection()
             cursor = conn.cursor()
             if scan_all:
                 cursor.execute("SELECT id, file_path FROM images")
             else:
                 cursor.execute("SELECT id, file_path FROM images WHERE ai_status IS NULL OR ai_status = 'pending'")
-            
+
             rows = cursor.fetchall()
             if rows:
                 self.enqueue_images([(r['id'], r['file_path']) for r in rows], priority=False)
         except Exception as e:
             logger.error(f"Failed to fetch pending images: {e}")
+        finally:
+            conn.close()

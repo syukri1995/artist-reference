@@ -2,6 +2,12 @@ import sys
 import os
 from pathlib import Path
 
+# --- CRITICAL: Import ONNX Runtime BEFORE EVERYTHING ELSE to avoid DLL initialization conflicts ---
+try:
+    import onnxruntime as ort
+except ImportError:
+    pass
+
 # Disable OpenCL for OpenCV globally to prevent driver/build conflicts (CL_BUILD_PROGRAM_FAILURE)
 os.environ["OPENCV_OCL4DNN_DISABLE_OPCL"] = "1"
 os.environ["OPENCV_OPENCL_RUNTIME"] = "disabled"
@@ -177,12 +183,12 @@ class Application(QMainWindow):
         self.ai_manager = AIManager()
         self.ai_manager._progress_callback = self._on_ai_progress
 
-    def _on_ai_progress(self, current, total, image_id=None, status='scanning', tags=None):
+    def _on_ai_progress(self, current, total, image_id=None, status='scanning', tags=None, priority=False):
         """Handle progress updates from the AI Manager."""
         # Update Gallery UI (thread-safe via QTimer)
         # Capture current values in lambda defaults to avoid closure issues
-        QTimer.singleShot(0, lambda c=current, t=total, i=image_id, s=status, tg=tags: 
-                          self.gallery_view.set_ai_scan_progress(c, t, i, s, tags=tg))
+        QTimer.singleShot(0, lambda c=current, t=total, i=image_id, s=status, tg=tags, p=priority: 
+                          self.gallery_view.set_ai_scan_progress(c, t, i, s, tags=tg, priority=p))
         
         # Update Settings Dialog if open
         from PyQt5.QtWidgets import QDialog

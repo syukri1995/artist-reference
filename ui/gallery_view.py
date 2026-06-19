@@ -410,6 +410,11 @@ class GalleryView(QWidget):
         self.only_favorites = False
         self.only_recent = False
         
+        # Batch AI Scan Tracking
+        self._current_batch_ids = set()
+        self._current_batch_total = 0
+        self._current_batch_done = 0
+        
         self._loading = False
         self._load_queue = ImageLoadQueue(self, worker_count=6)
         self._load_queue.image_ready.connect(self._on_thumbnail_ready)
@@ -935,32 +940,48 @@ class GalleryView(QWidget):
         if path in self._cards:
             self._cards[path].set_pixmap(pixmap)
 
-    def set_ai_scan_progress(self, current: int, total: int, image_id: int = None, status: str = 'scanning', tags=None) -> None:
-        if total > 0:
-            percent = int((current / total) * 100)
-            self._load_status.set_progress(current, total, f"AI Scanning\u2026 {percent}%")
-            if image_id is not None:
-                target_id = int(image_id)
-                # Convert tags from list of tuples (name, confidence) to list of dicts for ImageCard
-                formatted_tags = []
-                if tags:
-                    formatted_tags = [{"name": t[0], "confidence": t[1]} for t in tags]
+    def set_ai_scan_progress(self, current: int, total: int, image_id: int = None, status: str = 'scanning', tags=None, priority=False) -> None:
+        # 1. Batch Tracking (User-Initiated Priority Scans)
+        if priority and image_id in self._current_batch_ids:
+            if status in ('completed', 'failed'):
+                self._current_batch_done += 1
+            
+            self._load_status.set_progress(
+                self._current_batch_done, 
+                self._current_batch_total, 
+                f"Processing {self._current_batch_done}/{self._current_batch_total} selected images..."
+            )
+            
+            if self._current_batch_done >= self._current_batch_total:
+                self._current_batch_ids = set()
+                QTimer.singleShot(3000, self._load_status.hide_idle)
 
-                for p, mid in self.path_to_id.items():
-                    if int(mid) == target_id and p in self._cards:
-                        card = self._cards[p]
-                        card.set_ai_status(status, tags=formatted_tags)
-                        if status == 'scanning':
-                            self.gallery_scroll.ensureWidgetVisible(card)
-                        
-                        # Refresh details if this card is currently selected
-                        if status == 'completed' and p in self.selected_images:
-                            self._update_detail_panel(target_id)
-                            self._refresh_sidebar_data()
-
-            if current >= total and status == 'idle':
+        # 2. Global Progress (Background Scans)
+        elif not priority and total > 1:
+            self._load_status.set_progress(current, total, f"Background AI Scan: {current}/{total}")
+            if current >= total:
                 QTimer.singleShot(2000, self._load_status.hide_idle)
-        else:
+
+        # 3. Individual Card Updates
+        if image_id is not None:
+            target_id = int(image_id)
+            formatted_tags = []
+            if tags:
+                formatted_tags = [{"name": t[0], "confidence": t[1]} for t in tags]
+
+            for p, mid in self.path_to_id.items():
+                if int(mid) == target_id and p in self._cards:
+                    card = self._cards[p]
+                    card.set_ai_status(status, tags=formatted_tags)
+                    if status == 'scanning':
+                        self.gallery_scroll.ensureWidgetVisible(card)
+                    
+                    if status == 'completed' and p in self.selected_images:
+                        self._update_detail_panel(target_id)
+                        self._refresh_sidebar_data()
+
+        # 4. Handle Idle
+        if status == 'idle' and not self._current_batch_ids:
             self._load_status.hide_idle()
 
     def reset_filters(self, reload=True):
@@ -1081,29 +1102,32 @@ class GalleryView(QWidget):
         try:
             from database import get_connection
             conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM images WHERE id = ?", (image_id,))
-            row = cursor.fetchone()
-            if not row:
-                self.detail_title.setText("Error")
-                self.detail_path.setText("Image data not found")
-                return
-            row_dict = dict(row)
-            self.detail_title.setText(Path(row_dict['file_path']).name)
-            self.detail_path.setText(row_dict['file_path'])
-            self.detail_ai_status.setText(row_dict.get('ai_status', 'pending').upper())
-            
-            self.detail_tags_list.clear()
-            tags = self.tag_mgr.get_tags_for_image(image_id)
-            if tags:
-                for t in tags:
-                    item = QListWidgetItem(t['name'])
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM images WHERE id = ?", (image_id,))
+                row = cursor.fetchone()
+                if not row:
+                    self.detail_title.setText("Error")
+                    self.detail_path.setText("Image data not found")
+                    return
+                row_dict = dict(row)
+                self.detail_title.setText(Path(row_dict['file_path']).name)
+                self.detail_path.setText(row_dict['file_path'])
+                self.detail_ai_status.setText(row_dict.get('ai_status', 'pending').upper())
+                
+                self.detail_tags_list.clear()
+                tags = self.tag_mgr.get_tags_for_image(image_id)
+                if tags:
+                    for t in tags:
+                        item = QListWidgetItem(t['name'])
+                        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                        self.detail_tags_list.addItem(item)
+                else:
+                    item = QListWidgetItem("No tags")
                     item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
                     self.detail_tags_list.addItem(item)
-            else:
-                item = QListWidgetItem("No tags")
-                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-                self.detail_tags_list.addItem(item)
+            finally:
+                conn.close()
         except Exception as e:
             logger.error(f"Failed to update detail panel: {e}")
 
@@ -1134,7 +1158,16 @@ class GalleryView(QWidget):
             action.triggered.connect(lambda checked, s=i: self.import_to_workspace_slot.emit(paths, s))
             
         menu.addSeparator()
-        menu.addAction("✨ AI Analysis").triggered.connect(lambda: self._trigger_ai_scan(paths))
+        
+        # Context-aware AI label
+        any_sensitive = False
+        for p in paths:
+            if p in self._cards and self._cards[p]._is_sensitive:
+                any_sensitive = True
+                break
+        
+        ai_label = "Update with more uncensored image..." if any_sensitive else "Update more pictures..."
+        menu.addAction(f"✨ {ai_label}").triggered.connect(lambda: self._trigger_ai_scan(paths))
         menu.addAction("Edit Tags...").triggered.connect(lambda: self._open_tag_editor(paths))
         
         menu.addSeparator()
@@ -1173,6 +1206,11 @@ class GalleryView(QWidget):
                 data.append((self.path_to_id[p], p))
         
         if data:
+            # Start batch tracking for user-initiated scan
+            self._current_batch_ids = {d[0] for d in data}
+            self._current_batch_total = len(data)
+            self._current_batch_done = 0
+            
             main = self.window()
             if hasattr(main, "ai_manager"):
                 main.ai_manager.enqueue_images(data, priority=True)
