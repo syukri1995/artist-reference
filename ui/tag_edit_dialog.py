@@ -31,6 +31,7 @@ class TagEditDialog(QDialog):
         root.addWidget(header)
 
         self.search_entry = QLineEdit()
+        self.search_entry.setClearButtonEnabled(True)
         self.search_entry.setPlaceholderText("Filter tags…")
         self.search_entry.textChanged.connect(self._filter_tags)
         root.addWidget(self.search_entry)
@@ -45,6 +46,7 @@ class TagEditDialog(QDialog):
 
         create_row = QHBoxLayout()
         self.new_tag_entry = QLineEdit()
+        self.new_tag_entry.setClearButtonEnabled(True)
         self.new_tag_entry.setPlaceholderText("New tag name")
         create_row.addWidget(self.new_tag_entry, stretch=1)
         add_btn = QPushButton("Create")
