@@ -694,6 +694,7 @@ class GalleryView(QWidget):
         
         self.search_entry = QLineEdit()
         self.search_entry.setPlaceholderText("Search your library...")
+        self.search_entry.setClearButtonEnabled(True)
         self.search_entry.setStyleSheet("""
             QLineEdit {
                 background: transparent;
