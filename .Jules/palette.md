@@ -4,3 +4,6 @@
 ## 2024-05-18 - Rich UI with HTML in PyQt Labels
 **Learning:** PyQt `QLabel` widgets fully support a subset of HTML for rich text formatting. This is extremely useful for designing informative empty states without having to construct complex nested layout hierarchies or custom widgets. Using HTML `<table>` tags allows for perfect alignment of keyboard shortcut hints.
 **Action:** When creating empty states or informational banners in PyQt, utilize HTML strings within `QLabel` to easily style and align content, rather than writing custom paint events or layout code.
+## 2025-02-23 - Drop Zone Interaction Feedback
+**Learning:** Native drop zones lacking visual feedback on `dragEnter` and `dragLeave` events can cause user uncertainty about whether the application is ready to accept dragged files. Implementing style changes (like altering border colors and background shades) directly reassures the user.
+**Action:** When implementing custom drop zones using `QWidget`, always override `dragEnterEvent` and `dragLeaveEvent` to toggle visual states, and reset the state in `dropEvent`. Ensure to use `setObjectName` to apply QSS rules securely to the container without them leaking to its children.
