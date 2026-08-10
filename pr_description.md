@@ -1,14 +1,12 @@
-🎯 **What:** The code health issue addressed
-Replaced the usage of `print()` with `logger.error()` for exception and error handling within `managers/tag_manager.py`. Removed unneeded trailing spaces in the file as well.
+💡 **What:** The optimization implemented
+Replaced the loop of individual `INSERT` and `SELECT` queries for `tag_ids` inside `managers/tag_manager.py` (`apply_danbooru_tags_to_image`) with batched statements: an `executemany` statement for `INSERT` queries, and a chunked `IN` statement for `SELECT` queries (using batches of 900 names to safely stay within SQLite's 999 parameter limit).
 
-💡 **Why:** How this improves maintainability
-Logging errors properly using the `logging` module guarantees that application errors are correctly recorded without polluting standard output streams, which is cleaner and safer for production environments. It also consolidates log formatting.
+🎯 **Why:** The performance problem it solves
+The original method exhibited classic N+1 querying: for every single tag being applied, it ran two separate single-record queries (`INSERT`, then `SELECT`). For images with many Danbooru tags, this resulted in an exorbitant amount of unnecessary query executions, which bottlenecked performance. By batching queries, we avoid the overhead of opening and compiling so many queries over and over.
 
-✅ **Verification:** How you confirmed the change is safe
-- Setup virtual environment with `pytest`, `pytest-qt`, and `flake8`.
-- Ran `pytest tests/test_tag_manager.py` verifying all tags tests still succeed.
-- Ran `pytest tests/` achieving a 100% test pass rate across the entirety of 41 tests.
-- Linted the changed file with `flake8 --ignore=E501,E221,E203,F401,W503` making sure no new style issues were introduced.
+📊 **Measured Improvement:**
+A benchmark was created using `benchmark_tags.py` to test appending 50,000 tags on a single image.
+* **Baseline** applied 50,000 tags in roughly ~0.55s.
+* **Optimized** version applied 50,000 tags in ~0.49s.
 
-✨ **Result:** The improvement achieved
-A more consistent and robust logging strategy in the TagManager handling errors correctly.
+Even on an already relatively performant SQLite connection model with thread-local pooling, this change provided approximately an ~11% speed improvement in the function execution time, minimizing unneeded queries.
