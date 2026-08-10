@@ -16,10 +16,10 @@ class ImageManager:
         self.base_dir = get_base_dir()
         self.images_dir = self.base_dir / "data" / "images"
         self.thumbs_dir = self.base_dir / "data" / "thumbnails"
-        
+
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.thumbs_dir.mkdir(parents=True, exist_ok=True)
-        
+
     @staticmethod
     def _compute_file_hash(path: Path) -> str:
         hash_md5 = hashlib.md5()
@@ -71,14 +71,14 @@ class ImageManager:
         try:
             with Image.open(source_path) as img:
                 width, height = img.size
-                
+
                 # Convert to RGB mode if not
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
-                    
+
                 img.thumbnail(max_size, Image.Resampling.LANCZOS)
                 img.save(thumb_path, "WEBP", quality=80)
-                
+
                 return width, height
         except Exception as e:
             logger.error("Error generating thumbnail for %s: %s", source_path, e)
@@ -162,7 +162,7 @@ class ImageManager:
         except Exception as e:
             logger.error("Duplicate check error: %s", e)
             return None
-            
+
     SORT_OPTIONS = {
         "date_added_desc": "i.date_added DESC",
         "date_added_asc": "i.date_added ASC",
@@ -428,13 +428,13 @@ class ImageManager:
             )
         conn.commit()
         conn.close()
-        
+
     def delete_image(self, file_path: str):
         """Deletes image metadata and its physical thumbnail and library representations."""
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute(
                 "SELECT id, thumbnail_path FROM images WHERE file_path = ?", (file_path,)
             )
@@ -463,7 +463,7 @@ class ImageManager:
                 )
                 cursor.execute("DELETE FROM images_fts WHERE image_id = ?", (image_id,))
                 cursor.execute("DELETE FROM images WHERE id = ?", (image_id,))
-                
+
             conn.commit()
             conn.close()
             return True
@@ -499,39 +499,57 @@ class ImageManager:
         cursor.execute("SELECT file_path FROM images")
         rows = cursor.fetchall()
         conn.close()
-        
+
         missing_images = []
         for row in rows:
             path_str = row['file_path']
             if not Path(path_str).exists():
                 missing_images.append(path_str)
-                
+
         return missing_images
-        
+
     def remove_missing_images(self, missing_paths: list[str]):
         """Removes the given missing paths from the database and scrubs their thumbnails."""
+        if not missing_paths:
+            return
+
         conn = get_connection()
         cursor = conn.cursor()
-        
-        for p in missing_paths:
+
+        chunk_size = 900
+        for i in range(0, len(missing_paths), chunk_size):
+            chunk = missing_paths[i:i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+
             cursor.execute(
-                "SELECT id, thumbnail_path FROM images WHERE file_path = ?", (p,)
+                f"SELECT id, thumbnail_path, file_path FROM images WHERE file_path IN ({placeholders})", chunk
             )
-            row = cursor.fetchone()
-            if row:
-                image_id = row["id"]
+            rows = cursor.fetchall()
+
+            if not rows:
+                continue
+
+            image_ids = []
+            file_paths = []
+
+            for row in rows:
+                image_ids.append(row["id"])
+                file_paths.append(row["file_path"])
+
                 thumb_path = Path(row["thumbnail_path"])
                 if thumb_path.exists():
                     try:
                         os.remove(thumb_path)
                     except OSError:
                         pass
-                cursor.execute("DELETE FROM workspace_state WHERE image_id = ?", (image_id,))
-                cursor.execute(
-                    "DELETE FROM workspace_state WHERE file_path = ?", (p,)
-                )
-                cursor.execute("DELETE FROM images WHERE id = ?", (image_id,))
-            
+
+            id_placeholders = ",".join("?" * len(image_ids))
+            path_placeholders = ",".join("?" * len(file_paths))
+
+            cursor.execute(f"DELETE FROM workspace_state WHERE image_id IN ({id_placeholders})", image_ids)
+            cursor.execute(f"DELETE FROM workspace_state WHERE file_path IN ({path_placeholders})", file_paths)
+            cursor.execute(f"DELETE FROM images WHERE id IN ({id_placeholders})", image_ids)
+
         conn.commit()
         conn.close()
 
